@@ -27,6 +27,10 @@ void espnowSenderInit(const uint8_t *peerMac, uint8_t channel = 1) {
     esp_now_add_peer((uint8_t *)peerMac, ESP_NOW_ROLE_SLAVE, channel, NULL, 0);
 
     Serial.println("[Sender] ESP-NOW initialized");
+    Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
+    Serial.printf("  Peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                  peerMac[0], peerMac[1], peerMac[2],
+                  peerMac[3], peerMac[4], peerMac[5]);
     Serial.printf("  Block: %dx%d (%d B/pkt), Total: %d pkts\n",
                   BLOCK_W, BLOCK_H, BLOCK_DATA_BYTES, TOTAL_PACKETS);
 }

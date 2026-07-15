@@ -46,6 +46,7 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel = 1) {
     esp_now_register_recv_cb(onDataRecv);
 
     Serial.println("[Receiver] ESP-NOW ready (8x8 blocks, strip buffer)");
+    Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
     Serial.printf("  Strip: %dx%d (%d bytes)\n",
                   IMG_WIDTH, STRIP_H, STRIP_BUFFER_BYTES);
     Serial.printf("  Total: %d pkts\n", TOTAL_PACKETS);
