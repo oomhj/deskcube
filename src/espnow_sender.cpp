@@ -2,7 +2,7 @@
  * ESP-NOW 图片发送端
  *
  * 提供同步 sendPacket 用于 START/END 控制包和 JPEG 分片发送。
- * JPEG 模式下 displayStrip 直写 TFT，不经过 Sprite 中转。
+ * 接收机负责 JPEG 解码 + LCD 显示。
  */
 
 #include <ESP8266WiFi.h>

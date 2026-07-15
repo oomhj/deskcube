@@ -4,34 +4,23 @@
 #include <stdint.h>
 
 // =====================================================================
-// ESP-NOW 图片传输协议（JPEG 模式）
+// ESP-NOW JPEG 传输协议
 //
 // 图片尺寸:   240 × 240 像素
-// 传输方式:   基站通过串口接收 JPEG → ESP-NOW 分片转发 → 接收机解码
+// 基站:       串口接收 JPEG → ESP-NOW 分片转发
+// 接收机:     重组 JPEG → TJpg_Decoder 解码 → LCD 显示
 // ESP-NOW 分片: 239 字节数据 + 11 字节头 = 250 字节/包
 //
-// ESP-NOW 包类型:
+// 包类型:
 //   PKT_JPG_START  — JPEG 文件开始, param=总字节数
 //   PKT_JPG_DATA   — JPEG 数据分片, seq=分片序号
 //   PKT_JPG_END    — JPEG 传输结束
-//   PKT_IMAGE_START/END — 兼容控制包
+//   PKT_IMAGE_START/END — 兼容控制包 (seq=总包数)
 // =====================================================================
 
 #define IMG_WIDTH       240
 #define IMG_HEIGHT      240
-
-// --- 行缓冲区 (接收端) ---
-#define STRIP_H         8
-#define STRIP_BUFFER_BYTES (STRIP_H * IMG_WIDTH * 2)  // 3840 字节
-
-// --- 传输块 (兼容保留) ---
-#define BLOCK_W         8
-#define BLOCK_H         8
-#define BLOCK_PIXELS    (BLOCK_W * BLOCK_H)
-#define BLOCK_DATA_BYTES (BLOCK_PIXELS * 2)
-
-#define BLOCKS_PER_STRIP (IMG_WIDTH / BLOCK_H)
-#define TOTAL_STRIPS     (IMG_HEIGHT / BLOCK_W)
+#define TOTAL_STRIPS    30   // 每张图 30 个 strip ACK
 
 // --- ESP-NOW ---
 #define ESPNOW_MAX_DATA  250
