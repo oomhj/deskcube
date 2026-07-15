@@ -36,7 +36,7 @@
 ### 变更文件
 | 文件 | 变更 |
 |------|------|
-| `src/clockV101.ino` | 替换 `peerMac[]` 的广播地址为 `RECEIVER_MAC` |
+| `src/espnow_display.ino` | 替换 `peerMac[]` 的广播地址为 `RECEIVER_MAC` |
 | `include/espnow_img_proto.h` 或 `src/main.h` | 添加 MAC 宏定义 |
 
 ---
