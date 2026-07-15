@@ -14,18 +14,14 @@
 
 ### 包格式
 
-所有多字节整数为**小端序**（LSB first）。除特别说明外，每个数据包末尾带 1 字节 XOR 校验和：
+所有多字节整数为**小端序**（LSB first）。
 
 ```
-┌─────────┬──────────┬──────────────────────┬──────────┐
-│  cmd    │  len     │  payload             │  xor_sum │
-│  1 byte │  2 bytes │  len bytes           │  1 byte  │
-└─────────┴──────────┴──────────────────────┴──────────┘
+┌─────────┬──────────┬──────────────────────┐
+│  cmd    │  len     │  payload             │
+│  1 byte │  2 bytes │  len bytes           │
+└─────────┴──────────┴──────────────────────┘
 ```
-
-`xor_sum = cmd XOR len_lo XOR len_hi XOR payload[0] XOR payload[1] XOR ...`
-
-接收端在校验失败时静默丢弃该包并等待下一个命令头。
 
 ### 命令列表
 
@@ -49,10 +45,8 @@
 
 ### 数据传输流程
 
-基站每处理完一行后回复 `0x06` (ACK) 通知宿主机发下一行。
-
 ```
-宿主机                               基站
+宿主机                              基站
   │                                    │
   ├─ CMD_IMG_START ──────────────────> │ 准备接收
   │                                    ├─ ESP-NOW: PKT_IMAGE_START
@@ -63,70 +57,172 @@
   │ <───────────────────────────── ACK │              ┌─────────┤
   │  ...                               │   环形队列   │ ESP-NOW │
   ├─ CMD_STRIP_DATA (strip=29) ──────> │ LCD 显示 → 入 → 出队   │
-  │ <───────────────────────────── ACK │   (Q=8)     └─────────┤
+  │ <───────────────────────────── ACK │   (Q=7)     └─────────┤
   │                                    │                        │
   ├─ CMD_IMG_END ────────────────────> │ 等队列排空 → ESP-NOW: END
 ```
 
-> **架构说明：** 基站内部有一个 8 条目的环形队列。
-> 串口收到 strip 后立即 LCD 显示、入队、回复 ACK（不等待 ESP-NOW）。
-> ESP-NOW 从队列异步出队发送。队列满时不回 ACK（背压），
-> 宿主机等待，串口数据自然停止，避免 RX 溢出。
-> 串口 RX 硬件缓冲区已增大至 4096 字节，可容纳一整条 strip 数据。
-
 ---
 
-## 基站端实现
+## 架构
 
-### 关键代码
+### 环形队列 + 异步 ESP-NOW
+
+基站内部采用**生产者-消费者**模式：
+
+```
+串口(115200)                         ESP-NOW(~90KB/s)
+    │                                    ▲
+    ▼                                    │
+┌──────────┐  入队   ┌────────────┐  出队  ┌──────────┐
+│ S_IDLE   │ ──────> │ stripQ[7]  │ ─────> │ begin    │
+│ S_HEAD   │         │ 环形队列    │        │ SendStrip│
+│ S_DATA   │         │ Q_SIZE=8   │        │ + poll   │
+└──────────┘         │ 有效容量=7 │        └──────────┘
+     │               └────────────┘
+     ▼
+   LCD 显示
+   + ACK(0x06)
+```
+
+| 角色 | 说明 |
+|------|------|
+| **生产者（串口状态机）** | `S_IDLE` → 读命令头 → `S_HEAD` → `S_DATA` → 收完 3840 像素 |
+| **入队 + ACK** | `displayStrip()` 推 LCD → `qPush()` 入队 → `Serial.write(0x06)` |
+| **背压** | 队列满时 `qPush` 失败 → 不回 ACK → Python 暂停发送 → 无数据溢出 |
+| **消费者（异步 ESP-NOW）** | `beginSendStrip()` 开始 → `pollSendStrip()` 逐块轮询 |
+| **出队时机** | 上一个 strip 的 30 块全部发完（或跳过失败块）后，`qPop` 取下一个 |
+
+### 串口接收状态机
+
+```
+S_IDLE ──[3B header]──> S_HEAD
+                          │
+                    [字节到达] 
+                          │
+                          ▼
+                       S_DATA ──[3840B读完]──> displayStrip() → qPush() → ACK
+                                                  │                   │
+                                                  └── 失败(队列满) ──┘
+                                                        → 不 ACK（背压）
+                                                        → 下次循环重试入队
+```
+
+接收到的 strip 数据暂存于 `recvBuf[3840]`，入队时 `memcpy` 到 `stripQ[qHead]`。
+
+### 环形队列
+
+```
+#define Q_SIZE  8
+static uint8_t stripQ[Q_SIZE][3840];  // 8 × 3840 = 30 KB
+
+qPush()           : 写入 stripQ[qHead], (qHead+1)%8
+qPop()            : 读取 stripQ[qTail], (qTail+1)%8
+qFull()/qEmpty()  : (qHead+1)%8 == qTail → full; qHead == qTail → empty
+```
+
+一个槽位用于 full/empty 区分，有效容量 = 7 条 strip。
+入队时 `memcpy` 3840 字节，ESP-NOW 发送使用**独立缓冲区** `as.pixels[]`，不受队列回绕影响。
+
+### 异步 ESP-NOW 发送
+
+队列消费者的 ESP-NOW 发送通过 **事件计数器** 与 ISR 通信，避免竞态：
 
 ```cpp
-// espnow_display.ino — 基站主循环
-static uint8_t stripBuf[3840];  // 全局缓冲区（避免栈溢出）
+// ISR 上下文
+void onDataSent(...) {
+    sendSuccess = (status == 0);
+    sendEvents++;           // 原子递增
+}
 
-while (1) {
-    if (Serial.available() < 4) { delay(1); continue; }  // 3B header + 1B xor
-
-    uint8_t cmd = Serial.read();
-    uint16_t len = Serial.read() | (Serial.read() << 8);
-
-    switch (cmd) {
-        case CMD_IMG_START:
-            if (sendStartPacket(imgId)) {
-                inImage = true;
-                totalSent = 0;
-            }
-            break;
-
-        case CMD_STRIP_DATA:
-            if (!inImage) { drainSerial(len); break; }
-            stripIdx = Serial.read();
-            Serial.readBytes(stripBuf, 3840);
-            sendStripFromHost(imgId, stripIdx, stripBuf);  // LCD + ESP-NOW
-            Serial.write(0x06);  // ACK
-            break;
-
-        case CMD_IMG_END:
-            sendEndPacket(imgId, totalSent);
-            inImage = false;
-            break;
+// 主循环
+int pollSendStrip() {
+    if (sendEvents != lastSendEvents) {
+        lastSendEvents = sendEvents;  // 消费事件
+        // 处理结果（成功/失败/重试）
     }
+    if (超时) {
+        // 强制超时，跳过此块
+    }
+    // 发送下一块或返回完成
 }
 ```
 
-### 发送函数
+每块超时 200ms，最多 3 次重试后跳过。
+一个 strip 发完（至少发了 1 块）返回 `1`，全丢返回 `-1`。
 
-```cpp
-// espnow_sender.cpp
-bool sendStartPacket(uint16_t imageId);
-void sendEndPacket(uint16_t imageId, int sent);
-int  sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels);
+### 图片结束
+
+```
+宿主机                    基站
+  │                        │
+  ├─CMD_IMG_END ─────────> │ endPending = true
+  │                        │ 等队列排空
+  │                        │ 等 async send 空闲
+  │                        │ → sendEndPacket()  → ESP-NOW END
 ```
 
-`sendStripFromHost()` 完成：
-1. 将像素数据写入 strip sprite（`drawPixel` 逐像素填入 8×240 缓冲区）
-2. `pushSprite` 推送到基站 LCD
-3. 从缓冲区读取 8×8 块，通过 `sendPacket()` 单播发送（硬件 ACK + 最多 5 次重试）
+`CMD_IMG_END` 立即回复，实际 ESP-NOW END 包在队列全部排空后发送。
+
+---
+
+## 关键代码
+
+### espnow_display.ino — 基站主循环
+
+```cpp
+// 环形队列
+#define Q_SIZE  8
+static uint8_t stripQ[Q_SIZE][STRIP_BUFFER_BYTES];
+static volatile int qHead = 0, qTail = 0;
+
+// 串口接收状态机
+switch (sState) {
+  case S_IDLE:
+    if (Serial.available() >= 3) {
+      cmd = Serial.read();
+      len = Serial.read() | (Serial.read() << 8);
+      // CMD_IMG_START / CMD_STRIP_DATA / CMD_IMG_END
+    }
+    break;
+  case S_HEAD:
+    if (Serial.available()) sState = S_DATA;
+    break;
+  case S_DATA:
+    while (recvPos < recvLen && Serial.available())
+      recvBuf[recvPos++] = Serial.read();
+    if (recvPos >= recvLen) {
+      displayStrip(recvIdx, recvBuf);        // LCD
+      if (qPush(recvIdx, recvBuf))
+        Serial.write(0x06);                  // ACK
+      sState = S_IDLE;
+    }
+    break;
+}
+
+// 消费者
+if (!isSendBusy() && !qEmpty()) {
+  qPop(&si, &data);
+  beginSendStrip(imgId, si, data);  // 内部 memcpy
+}
+if (isSendBusy()) {
+  int st = pollSendStrip(imgId);
+  if (st == 1) totalSent += getSendCount();
+}
+```
+
+### espnow_sender.cpp — 发送函数
+
+```cpp
+void displayStrip(int stripIdx, const uint8_t *pixels);  // LCD
+void beginSendStrip(uint16_t imageId, int stripIdx,
+                    const uint8_t *pixels);  // 异步开始（内部复制数据）
+int  pollSendStrip(uint16_t imageId);        // 轮询，0/1/-1
+bool isSendBusy();
+int  getSendCount();
+bool sendStartPacket(uint16_t imageId);      // 同步（START/END 控制包）
+bool sendEndPacket(uint16_t imageId, int sent);
+```
 
 ---
 
@@ -135,7 +231,6 @@ int  sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels);
 ### send.py
 
 ```bash
-# 安装依赖
 pip3 install pyserial Pillow
 
 # 发送图片（自动缩放至 240×240）
@@ -148,49 +243,33 @@ python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.jpg
 |------|--------|------|
 | `STRIP_ACK_TIMEOUT` | `30.0` | 等待基站 ACK 超时（秒） |
 
-核心函数：
+核心流程：
 
 ```python
-def load_image_strips(path):
-    """加载图片 → 缩放到 240×240 → RGB565 → 30 行数据"""
-    img = Image.open(path).convert('RGB')
-    img = img.resize((240, 240), Image.LANCZOS)
-    # 返回 30 个 bytes，每个 3840 字节
-
-def send_image_via_serial(ser, strips):
-    """发送完整图片（START + 30 strips + END），每行等待 ACK"""
-    send_serial_packet(ser, CMD_IMG_START)
-    for idx, strip_data in enumerate(strips):
-        payload = bytes([idx]) + strip_data
-        send_serial_packet(ser, CMD_STRIP_DATA, payload)
-        if not wait_strip_ack(ser):
-            raise RuntimeError('ACK timeout')
-    send_serial_packet(ser, CMD_IMG_END)
+send_serial_packet(ser, CMD_IMG_START)   # START
+for idx, strip_data in enumerate(strips):
+    send_serial_packet(ser, CMD_STRIP_DATA, payload)
+    wait_strip_ack(ser)                   # 每行等 ACK
+send_serial_packet(ser, CMD_IMG_END)     # END
 ```
+
+ACK 超时通过环境变量 `STRIP_ACK_TIMEOUT` 调整。
+基站在队列满时不回复 ACK → Python 等待 → 天然背压。
 
 ### 直接串口发送（无 Python 依赖）
 
 ```bash
-# 手动发送一行红色测试数据（Python 单行命令）
 python3 -c "
 import serial, struct, time
 ser = serial.Serial('/dev/cu.usbserial-1140', 115200)
-# START
-ser.write(b'\x01\x00\x00\x01')  # 最后字节 = XOR 校验和
-time.sleep(0.1)
-# 一行红色 (3840 字节)
-strip = bytes([0]) + b'\x00\xF8' * 1920
-payload = strip
-xor = 0x02 ^ 0x01 ^ 0x0F  # cmd ^ len_lo ^ len_hi 等
-ser.write(b'\x02' + struct.pack('<H', len(payload)) + payload + bytes([xor]))
-time.sleep(5)  # 等待处理
-# END
-ser.write(b'\x03\x00\x00\x03')
+ser.write(b'\x01\x00\x00'); time.sleep(0.5)        # START
+strip = bytes([0]) + b'\x00\xF8' * 1920             # 红色
+ser.write(b'\x02' + struct.pack('<H', len(strip)) + strip)
+time.sleep(5)
+ser.write(b'\x03\x00\x00')                           # END
 ser.close()
 "
 ```
-
-> 手动发送时校验和不可省略，否则基站会因校验失败丢弃包。
 
 ---
 
@@ -202,22 +281,22 @@ ser.close()
 | 串口传输 (460800) | ~44 KB/s | 每行 ≈ 83ms |
 | 串口传输 (921600) | ~88 KB/s | 每行 ≈ 42ms |
 | ESP-NOW (单播 ACK) | ~90 KB/s | 900 包约 1.3 秒 |
-| 整图传输 (115200) | ~11 秒 | 30 行 × 333ms + ESP-NOW 1.3s + ACK 等待 |
-| 整图传输 (921600) | ~2.0 秒 | 30 行 × 42ms + ESP-NOW 1.3s + ACK 等待 |
+| 整图传输 (115200) | ~10-11 秒 | 串口瓶颈，ACK 即时响应不增加延迟 |
+| 整图传输 (921600) | ~1.5-2 秒 | ESP-NOW 时间与串口时间重叠 |
 
-> 串口是瓶颈。ESP8266 硬件支持最高 921600 baud。
-> ESP8266 串口 RX 缓冲区已增大至 512 字节（`-DSERIAL_RX_BUFFER_SIZE=512`），
-> 配合行级 ACK 背压机制，有效防止 FIFO 溢出。
+> **瓶颈分析：** 队列架构下 ACK 在 LCD 显示后立即回复（不等待 ESP-NOW）。
+> 串口传输是唯一瓶颈（115200 下 ~11s），ESP-NOW 时间被重叠覆盖。
+> 串口 RX 缓冲区 4096 字节，可容纳一整条 strip 数据。
 
 ---
 
 ## 已知限制
 
-- **接收端去重策略丢弃乱序包：** ESP-NOW 是无序传输协议。当前接收端要求每行内的 `blockIdx`
-  单调递增，先到达的较大 `blockIdx` 会使稍后到达的较小 `blockIdx` 被丢弃，导致图像空洞。
-  这是有意取舍（避免重复绘制消耗 LCD 带宽），而非 bug。
-- **无校验重传：** 串口协议校验失败时静默丢弃，不会请求重传。
-  这在高波特率（921600）下可能增加图像噪声。
+- **接收端去重丢弃乱序包：** ESP-NOW 是无序协议。接收端要求每行 `blockIdx` 单调递增，
+  晚到的较小 `blockIdx` 被丢弃，导致图像空洞。此为有意取舍（避免重复绘制）。
+- **队列满降速：** ESP-NOW 严重阻塞时（多频段干扰），队列填满后 ACK 暂停，
+  整图时间 = 串口传输时间 + ESP-NOW 额外延迟。
+- **无校验重传：** 串口协议无校验和，损坏包静默丢弃。
 
 ---
 
@@ -225,6 +304,7 @@ ser.close()
 
 | 文件 | 说明 |
 |------|------|
-| `src/espnow_display.ino` | 基站主循环，串口命令解析 |
-| `src/espnow_sender.cpp` | `sendStartPacket()` / `sendEndPacket()` / `sendStripFromHost()` |
+| `src/espnow_display.ino` | 基站主循环，串口状态机，环形队列 |
+| `src/espnow_sender.cpp` | LCD 显示、异步/同步 ESP-NOW 发送 |
 | `tools/send.py` | 宿主机投屏工具 |
+| `platformio.ini` | `-DSERIAL_RX_BUFFER_SIZE=4096` 串口缓冲 |
