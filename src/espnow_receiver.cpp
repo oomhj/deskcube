@@ -116,7 +116,9 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
             uint8_t bi = pkt->header.blockIdx;
 
             // 去重：同一 strip 内 blockIdx 必须单调递增，重复/乱序包丢弃
-            if (bi <= lastSeq[si]) return;
+            // lastSeq 初始化为 0xFFFF（见 PKT_IMAGE_START memset），
+            // 所以首个包（bi=0）满足 lastSeq==0xFFFF 时放行
+            if (lastSeq[si] != 0xFFFF && bi <= lastSeq[si]) return;
             lastSeq[si] = bi;
 
             handleDataPacket(pkt);

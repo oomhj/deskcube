@@ -188,6 +188,8 @@ def main():
         arg2 = sys.argv[2]
         if ':' in arg2:  # 是 MAC 格式
             mac = arg2.upper()
+        elif os.path.isfile(arg2):  # 是图片文件，使用已保存的 MAC
+            pass  # 上面方式1 已经读取了 mac 或仍为 None
         else:  # 是接收端串口
             rx_port = arg2
             print(f'Reading MAC from receiver ({rx_port})...', end=' ', flush=True)
