@@ -1074,9 +1074,7 @@ void setup()
 
   tft.init();
   tft.setRotation(0);
-  tft.fillScreen(0x0000);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("ESP-NOW Receiver", 40, 110, 2);
+  tft.fillScreen(TFT_BLACK);
 
   espnowReceiverInit(&tft);
 
@@ -1085,9 +1083,7 @@ void setup()
   tft.init();
   tft.setRotation(0);
   tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("ESP-NOW Sender", 50, 110, 2);
-  delay(1000);
+  delay(100);
 
   // 对端 MAC 地址（先用广播，实际使用时替换为接收端 MAC）
   uint8_t peerMac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -1098,8 +1094,7 @@ void setup()
   uint16_t imgId = 1;
   while (1) {
     Serial.printf("\nSending image #%u...\n", imgId);
-    sendImage(imgId++, 3);
-    delay(5000);
+    sendImage(imgId++, 0);
   }
 
 #else
@@ -1121,7 +1116,13 @@ void setup()
 void loop()
 {
 
-#ifndef ESPNOW_MODE_SENDER
+#if defined(ESPNOW_MODE_RECEIVER)
+  delay(10);
+
+#elif defined(ESPNOW_MODE_SENDER)
+  delay(10);
+
+#else
   // ===== 时钟模式循环 =====
   if (timeStatus() != timeNotSet)
   { // 已经获取到数据的话
@@ -1149,10 +1150,6 @@ void loop()
   mqtt_client.loop();
   // http server
   esp8266_server.handleClient();
-
-#else
-  // ===== 发送端循环：ESP-NOW 发送在 setup 中已处理，这里只做延时 =====
-  delay(10);
 #endif
 }
 

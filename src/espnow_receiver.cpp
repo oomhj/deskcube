@@ -113,9 +113,6 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
             rxState.complete = true;
             rxState.receiving = false;
             printStats();
-
-            lcd->setTextColor(TFT_WHITE, TFT_BLACK);
-            lcd->drawString("Transfer Complete!", 4, 2, 2);
             break;
         }
 
