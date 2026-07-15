@@ -35,23 +35,33 @@
 
 ### JPEG 传输模式
 
-宿主机将图片压缩为 JPEG（推荐 Q70，约 8KB），基站用 TJpg_Decoder 解码后走相同队列路径。
+宿主机将图片压缩为 JPEG（推荐 Q70，约 8KB），基站完整接收后解码一个 8×8 块发一个，不经过队列。
 
 **JPEG 传输流程：**
 
 ```
 宿主机                              基站
   │                                    │
-  ├─ CMD_JPG_START ──────────────────> │ malloc JPEG 缓冲区
+  │  ── 串口层：只负责传入内存 ──      │
+  ├─ CMD_JPG_START ──────────────────> │ malloc(totalSize)
+  │   payload: [totalSize(2B)]        │ 校验 64~32768
+  │                                    │ sState = S_JPG_RECV
+  ├─ CMD_JPG_DATA (分片 0..N) ───────> │ jpgBuf[pos++] = read()
   │                                    │
-  ├─ CMD_JPG_DATA (分片 0..N) ───────> │ 收满 → TJpg_Decoder 解码
-  │                                    │ → 输出回调 → strip 入队 → ACK
-  │ <──────────────────────── ACK ×30  │ (每解完一条 strip 发 ACK)
-  │                                    │
-  ├─ CMD_IMG_END ────────────────────> │ 等队列排空 → ESP-NOW: END
+  │  ── 解码发送层：逐 8×8 块直发 ──   │
+  │                                    │ drawJpg(jpgBuf)
+  │                                    │ 输出回调:
+  │                                    │  ├─ 拆 8×8 block
+  │                                    │  ├─ sendImageBlock()
+  │                                    │  └─ strip 全 → ACK
+  │ <──────────────────────── ACK ×30  │ (每 strip 一次)
+  │                                    │ free(jpgBuf)
+  ├─ CMD_IMG_END ────────────────────> │ sendEndPacket()
+  │                                    │ → ESP-NOW END
 ```
 
-JPEG 解码期间，ESP-NOW 异步发送可同时运行（队列中的 strip 会被按序发出）。
+**与 RGB565 模式的区别：** JPEG 模式下串口只负责把数据写入内存，不通 ESP-NOW。
+JPEG 解码和 ESP-NOW 发送在回调中交替进行，不经过环形队列。
 
 ### 像素数据格式
 
@@ -255,8 +265,16 @@ bool sendEndPacket(uint16_t imageId, int sent);
 ```bash
 pip3 install pyserial Pillow
 
-# 发送图片（自动缩放至 240×240）
+# RGB565 模式：自动缩放→编码→发送
 python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.jpg
+
+# JPEG 模式：PIL 缩放→JPEG 编码→发送
+python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 --jpeg photo.png
+# 或直接传 JPEG 文件，自动检测
+python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.jpg
+
+# 直传 JPEG（已处理为 240×240，不做任何转换）
+python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 --raw-jpeg image.jpg
 ```
 
 环境变量：
