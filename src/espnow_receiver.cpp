@@ -1,10 +1,8 @@
 /**
- * ESP-NOW 图片接收端 (8×8块 + 8×240行缓冲区)
+ * ESP-NOW 图片接收端 (每收到一块立即刷新 LCD)
  *
- * 维护 8×240 行缓冲区 Sprite (3840 字节)
- * 每收到一个 8×8 块，写入行缓冲区对应位置
- * 一行 30 块收齐后 pushSprite 到 LCD
- * 无需全图缓冲区
+ * 每收到一个 8×8 块，立即用 Sprite 推送到 LCD 对应位置。
+ * 无需行缓冲区，仅用 8×8 Sprite (128 字节)。
  */
 
 #include <ESP8266WiFi.h>
@@ -16,8 +14,6 @@ typedef struct {
     uint16_t    imageId;
     uint16_t    totalExpected;
     uint16_t    totalReceived;
-    uint16_t    currentStrip;
-    uint8_t     stripBitmap[BLOCKS_PER_STRIP];  // 当前行收块位图
     unsigned long startTime;
     bool        receiving;
     bool        complete;
@@ -25,16 +21,16 @@ typedef struct {
 
 static ReceiverState rxState;
 static TFT_eSPI *lcd = NULL;
-static TFT_eSprite *strip = NULL;   // 8×240 行缓冲区
+static TFT_eSprite *block = NULL;   // 8×8 块缓冲区
 
 static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len);
-static void flushStrip(int stripY);
 
 void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     lcd = tft;
 
-    strip = new TFT_eSprite(lcd);
-    strip->createSprite(IMG_WIDTH, STRIP_H);  // 240 × 8
+    // 创建 8×8 块 Sprite (128 字节)
+    block = new TFT_eSprite(lcd);
+    block->createSprite(BLOCK_W, BLOCK_H);
 
     memset(&rxState, 0, sizeof(rxState));
 
@@ -45,57 +41,30 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
     esp_now_register_recv_cb(onDataRecv);
 
-    Serial.println("[Receiver] ESP-NOW ready (8x8 blocks, strip buffer)");
+    Serial.println("[Receiver] ESP-NOW ready (instant block push)");
     Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
-    Serial.printf("  Strip: %dx%d (%d bytes)\n",
-                  IMG_WIDTH, STRIP_H, STRIP_BUFFER_BYTES);
-    Serial.printf("  Total: %d pkts\n", TOTAL_PACKETS);
-}
-
-static void flushStrip(int stripY) {
-    strip->pushSprite(0, stripY);
-    strip->fillSprite(TFT_BLACK);  // 清空缓冲区
+    Serial.printf("  Block: %dx%d, Total: %d pkts\n",
+                  BLOCK_W, BLOCK_H, TOTAL_PACKETS);
 }
 
 static void handleDataPacket(EspnowImagePacket *pkt) {
-    int stripIdx = pkt->header.stripIdx;
-    int blockIdx = pkt->header.blockIdx;
-
-    // 新的一行 → 推送上一行
-    if (stripIdx != rxState.currentStrip) {
-        if (rxState.currentStrip < TOTAL_STRIPS) {
-            flushStrip(rxState.currentStrip * STRIP_H);
-        }
-        rxState.currentStrip = stripIdx;
-        memset(rxState.stripBitmap, 0, sizeof(rxState.stripBitmap));
-    }
+    int x = pkt->header.blockIdx * BLOCK_H;
+    int y = pkt->header.stripIdx * BLOCK_W;
 
     rxState.totalReceived++;
-    rxState.stripBitmap[blockIdx] = 1;
 
-    // 将 8×8 像素写入行缓冲区
-    int destX = blockIdx * BLOCK_H;  // blockIdx × 8
-
+    // 解码像素到 8×8 Sprite
     int idx = 0;
     for (int py = 0; py < BLOCK_W; py++) {
         for (int px = 0; px < BLOCK_H; px++) {
             uint16_t color = pkt->data[idx] | (pkt->data[idx + 1] << 8);
             idx += 2;
-            strip->drawPixel(destX + px, py, color);
+            block->drawPixel(px, py, color);
         }
     }
 
-    // 检查当前行是否收齐
-    bool done = true;
-    for (int i = 0; i < BLOCKS_PER_STRIP; i++) {
-        if (!rxState.stripBitmap[i]) { done = false; break; }
-    }
-    if (done) {
-        flushStrip(stripIdx * STRIP_H);
-        int pct = (stripIdx + 1) * 100 / TOTAL_STRIPS;
-        Serial.printf("[Receiver] Strip %d/%d (%d%%)\n",
-                      stripIdx + 1, TOTAL_STRIPS, pct);
-    }
+    // 立即推送到 LCD
+    block->pushSprite(x, y);
 }
 
 static void printStats() {
@@ -120,17 +89,14 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
     switch (hdr->type) {
         case PKT_IMAGE_START: {
             Serial.println("\n[Receiver] <<< IMAGE START >>>");
-            lcd->fillScreen(TFT_BLACK);
-            strip->fillSprite(TFT_BLACK);
-
             rxState.imageId       = hdr->imageId;
             rxState.totalExpected = hdr->total;
             rxState.totalReceived = 0;
-            rxState.currentStrip  = 0;
             rxState.receiving     = true;
             rxState.complete      = false;
             rxState.startTime     = millis();
-            memset(rxState.stripBitmap, 0, sizeof(rxState.stripBitmap));
+
+            lcd->fillScreen(TFT_BLACK);
             break;
         }
 
@@ -142,11 +108,6 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
 
         case PKT_IMAGE_END: {
             if (!rxState.receiving) return;
-
-            // 推送最后一行
-            if (rxState.currentStrip < TOTAL_STRIPS) {
-                flushStrip(rxState.currentStrip * STRIP_H);
-            }
 
             Serial.println("\n[Receiver] <<< IMAGE END >>>");
             rxState.complete = true;
