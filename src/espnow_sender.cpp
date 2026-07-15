@@ -169,3 +169,79 @@ void sendImage(uint16_t imageId, int waitMs) {
         Serial.printf("Data rate: %.1f KB/s\n", kBps);
     }
 }
+
+// =====================================================================
+// 宿主机模式（串口接收像素数据后转发）
+// =====================================================================
+
+bool sendStartPacket(uint16_t imageId) {
+    EspnowCtrlPacket startPkt;
+    memset(&startPkt, 0, sizeof(startPkt));
+    startPkt.header.type    = PKT_IMAGE_START;
+    startPkt.header.imageId = imageId;
+    startPkt.header.total   = TOTAL_PACKETS;
+    return sendPacket((uint8_t *)&startPkt, sizeof(startPkt));
+}
+
+void sendEndPacket(uint16_t imageId, int sent) {
+    EspnowCtrlPacket endPkt;
+    memset(&endPkt, 0, sizeof(endPkt));
+    endPkt.header.type    = PKT_IMAGE_END;
+    endPkt.header.imageId = imageId;
+    endPkt.header.total   = TOTAL_PACKETS;
+    endPkt.param          = sent;
+    sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
+}
+
+int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
+    // 将像素数据填入 strip sprite（用于本地 LCD 显示）
+    int idx = 0;
+    for (int py = 0; py < STRIP_H; py++) {
+        for (int px = 0; px < IMG_WIDTH; px++) {
+            uint16_t c = pixels[idx] | (pixels[idx + 1] << 8);
+            idx += 2;
+            strip->drawPixel(px, py, c);
+        }
+    }
+
+    // 推送到本地 LCD
+    strip->pushSprite(0, stripIdx * STRIP_H);
+
+    // 逐块发送
+    EspnowImagePacket pkt;
+    int sent = 0, retries = 0;
+
+    for (int blockIdx = 0; blockIdx < BLOCKS_PER_STRIP; blockIdx++) {
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type    = PKT_IMAGE_DATA;
+        pkt.header.imageId = imageId;
+        pkt.header.seq     = stripIdx * BLOCKS_PER_STRIP + blockIdx;
+        pkt.header.total   = TOTAL_PACKETS;
+        pkt.header.stripIdx = stripIdx;
+        pkt.header.blockIdx = blockIdx;
+        pkt.header.w       = BLOCK_W;
+        pkt.header.h       = BLOCK_H;
+
+        // 从像素缓冲区读取 8×8 块
+        int baseOff = blockIdx * BLOCK_H * 2;
+        int outIdx = 0;
+        for (int py = 0; py < BLOCK_W; py++) {
+            int rowOff = baseOff + py * IMG_WIDTH * 2;
+            for (int px = 0; px < BLOCK_H; px++) {
+                int off = rowOff + px * 2;
+                pkt.data[outIdx++] = pixels[off];
+                pkt.data[outIdx++] = pixels[off + 1];
+            }
+        }
+
+        bool ok = false;
+        for (int r = 0; r < 5; r++) {
+            if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) { ok = true; break; }
+            retries++;
+            delay(8);
+        }
+        if (ok) sent++;
+    }
+
+    return sent;
+}

@@ -14,6 +14,11 @@ TFT_eSPI tft = TFT_eSPI();
 void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel = 1);
 void sendImage(uint16_t imageId, int waitMs = 5);
 
+// 宿主机串口传图模式
+bool sendStartPacket(uint16_t imageId);
+void sendEndPacket(uint16_t imageId, int sent);
+int  sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels);
+
 #endif
 
 // ===== 接收端 =====

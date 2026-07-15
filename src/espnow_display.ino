@@ -72,10 +72,84 @@ void setup()
 
   espnowSenderInit(peerMac, &tft);
 
-  // 循环发送（图片在 sendImage 内部逐行生成，无需大数组）
+  Serial.println("[Base] Ready. Send image data via serial or press Enter for self-test.");
+
+  // 行缓冲区（全局避免栈溢出）
+  static uint8_t stripBuf[STRIP_BUFFER_BYTES];
   uint16_t imgId = 1;
+  int totalSent = 0;
+  bool inImage = false;
+
+  // 串口命令定义
+  enum { CMD_IMG_START = 0x01, CMD_STRIP_DATA = 0x02, CMD_IMG_END = 0x03 };
+
   while (1) {
-    sendImage(imgId++, 0);
+    if (Serial.available() < 3) {
+      // 无串口命令时自生成测试图
+      if (!inImage) {
+        sendImage(imgId++, 0);
+      } else {
+        delay(1);
+      }
+      continue;
+    }
+
+    // 读命令头: [cmd] [len_lo] [len_hi]
+    uint8_t cmd = Serial.read();
+    uint16_t len = Serial.read() | (Serial.read() << 8);
+
+    switch (cmd) {
+      case CMD_IMG_START: {
+        Serial.printf("\n=== Image #%u START from host ===\n", imgId);
+        bool ok = sendStartPacket(imgId);
+        inImage = true;
+        totalSent = 0;
+        if (ok) Serial.println("  ESP-NOW START sent");
+        break;
+      }
+
+      case CMD_STRIP_DATA: {
+        if (!inImage) {
+          for (int i = 0; i < len; i++) Serial.read();
+          break;
+        }
+        if (len < 1) break;
+        int stripIdx = Serial.read();
+        int dataLen = len - 1;
+
+        if (dataLen != STRIP_BUFFER_BYTES) {
+          for (int i = 0; i < dataLen; i++) Serial.read();
+          break;
+        }
+
+        int readBytes = 0;
+        while (readBytes < STRIP_BUFFER_BYTES) {
+          int n = Serial.readBytes(stripBuf + readBytes, STRIP_BUFFER_BYTES - readBytes);
+          if (n <= 0) break;
+          readBytes += n;
+        }
+
+        if (readBytes == STRIP_BUFFER_BYTES) {
+          int sent = sendStripFromHost(imgId, stripIdx, stripBuf);
+          totalSent += sent;
+        }
+        break;
+      }
+
+      case CMD_IMG_END: {
+        if (!inImage) break;
+        sendEndPacket(imgId, totalSent);
+        Serial.printf("=== Image #%u END, total sent: %d ===\n\n", imgId, totalSent);
+        inImage = false;
+        imgId++;
+        break;
+      }
+
+      default:
+        for (int i = 0; i < len; i++) Serial.read();
+        Serial.printf("Unknown cmd: 0x%02X\n", cmd);
+        break;
+    }
   }
 }
 
