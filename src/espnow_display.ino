@@ -104,6 +104,7 @@ static int jpgGetSlot(int stripIdx) {
 
 // TJpg_Decoder 输出回调
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
+  Serial.printf("  CB: x=%d y=%d wxh=%dx%d\n", x, y, w, h);
   // 将 tile 拆成 8×8 子块，逐个发送
   for (int by = 0; by < h; by += BLOCK_H) {
     for (int bx = 0; bx < w; bx += BLOCK_W) {
@@ -119,7 +120,8 @@ static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *b
       }
 
       // 发送
-      sendImageBlock(g_imgId, si, bi, block);
+      bool sent = sendImageBlock(g_imgId, si, bi, block);
+      if (!sent) Serial.printf("  BLOCK FAIL: strip=%d block=%d\n", si, bi);
 
       // 累积到对应的 strip 缓冲区
       int slot = jpgGetSlot(si);
@@ -145,6 +147,7 @@ static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *b
       for (int i = 0; i < 2; i++) {
         if (jpgAccumIdx[i] == si && jpgAccumMap[i] == 0x3FFFFFFF) {
           displayStrip(si, jpgAccum[i]);
+          Serial.printf("  ACK strip=%d\n", si);
           Serial.write(0x06);
           g_totalSent += 30;
           jpgAccumIdx[i] = -1;
