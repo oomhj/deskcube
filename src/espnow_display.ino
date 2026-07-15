@@ -72,43 +72,71 @@ static int      jpgTotalSize = 0;     // JPEG 文件总字节数
 static int      jpgRecvSize = 0;      // 已接收字节数
 static bool     jpgDecoding = false;  // 正在解码
 
-// 16 行临时像素缓冲区（2 条 strip，处理 16×16 MCU 跨越）
-static uint8_t  jpgRowBuf[IMG_WIDTH * 16 * 2];
-static int      jpgBufStartRow = -1;
+// JPEG 全局状态
+static uint16_t g_imgId = 1;
+static int      g_totalSent = 0;
 
-// TJpg_Decoder 输出回调
+// 当前 strip 的 8×8 块发送进度
+static uint8_t jpgStripBuf[STRIP_BUFFER_BYTES];
+static int     jpgCurStrip = -1;   // 正在累积的 strip
+static int     jpgCurBlocks = 0;   // 已发送块数
+
+static void flushJpgStrip() {
+  if (jpgCurStrip < 0) return;
+  displayStrip(jpgCurStrip, jpgStripBuf);
+  Serial.write(0x06);       // strip 完成 → ACK
+  g_totalSent += jpgCurBlocks;
+  jpgCurStrip = -1;
+  jpgCurBlocks = 0;
+}
+
+// TJpg_Decoder 输出回调：收到一个解码后的 tile → 拆成 8×8 块直接 ESP-NOW 发送
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  if (jpgBufStartRow < 0) {
-    jpgBufStartRow = y;
-    memset(jpgRowBuf, 0, sizeof(jpgRowBuf));
-  }
+  // tile 拆成 8×8 的子块
+  for (int by = 0; by < h; by += BLOCK_H) {
+    for (int bx = 0; bx < w; bx += BLOCK_W) {
+      int stripIdx = (y + by) / STRIP_H;
+      int blockIdx = (x + bx) / BLOCK_H;
 
-  int bufY = y - jpgBufStartRow;
-  // 拷贝像素到行缓冲区
-  for (int row = 0; row < h && (bufY + row) < 16; row++) {
-    memcpy(jpgRowBuf + (bufY + row) * IMG_WIDTH * 2 + x * 2,
-           (uint8_t *)(bitmap + row * w), w * 2);
-  }
+      // 如果换 strip 了，完成上一个
+      if (stripIdx != jpgCurStrip && jpgCurStrip >= 0) {
+        flushJpgStrip();
+      }
 
-  // 最后一列 → 提取完整 strip 入队
-  if (x + w >= IMG_WIDTH) {
-    int endRow = jpgBufStartRow + h;
-    int startSi = jpgBufStartRow / STRIP_H;
-    int numStrips = endRow / STRIP_H - startSi;
+      // 初始化新 strip
+      if (jpgCurStrip < 0) {
+        jpgCurStrip = stripIdx;
+        jpgCurBlocks = 0;
+        memset(jpgStripBuf, 0, sizeof(jpgStripBuf));
+      }
 
-    for (int i = 0; i < numStrips; i++) {
-      int si = startSi + i;
-      int off = (jpgBufStartRow % 16) * IMG_WIDTH * 2 + i * STRIP_BUFFER_BYTES;
+      // 从 bitmap 中提取 8×8 像素块
+      uint8_t block[BLOCK_DATA_BYTES];
+      int outIdx = 0;
+      for (int py = 0; py < BLOCK_H; py++) {
+        int tileRow = by + py;        // 在 tile 内的行
+        int imgX = x + bx;            // 块在图片中的 X
+        // bitmap 的 row = tileRow * w, 每像素 2 字节
+        int srcOff = (tileRow * w + bx) * 2;
+        memcpy(block + outIdx, (uint8_t *)bitmap + srcOff, BLOCK_H * 2);
+        outIdx += BLOCK_H * 2;
 
-      // 从 jpgRowBuf 拷贝到 recvBuf → 入队
-      memcpy(recvBuf, jpgRowBuf + off, STRIP_BUFFER_BYTES);
-      displayStrip(si, recvBuf);
-      qPush(si, recvBuf);
-      // JPEG 模式：每完成一个 strip 发 ACK
-      Serial.write(0x06);
+        // 同时写入 jpgStripBuf 供 LCD 显示用
+        int absY = y + tileRow;
+        int stripRelY = absY % STRIP_H;
+        memcpy(jpgStripBuf + stripRelY * IMG_WIDTH * 2 + imgX * 2,
+               (uint8_t *)bitmap + srcOff, BLOCK_H * 2);
+      }
+
+      // 直接发送这个 8×8 块
+      sendImageBlock(g_imgId, stripIdx, blockIdx, block);
+      jpgCurBlocks++;
     }
+  }
 
-    jpgBufStartRow = -1;
+  // 最后一列 → 刷出当前 strip
+  if (x + w >= IMG_WIDTH) {
+    flushJpgStrip();
   }
   return true;
 }
@@ -154,13 +182,13 @@ void setup() {
   // =================================================================
   // 主循环
   // =================================================================
-  uint16_t imgId   = 1;
-  int      totalSent  = 0;
+  g_imgId = 1;
+  g_totalSent = 0;
   bool     inImage    = false;
   bool     endPending = false;
 
   // 串口接收状态
-  enum { S_IDLE, S_HEAD, S_DATA, S_JPG_RECV } sState = S_IDLE;
+  enum { S_IDLE, S_DATA, S_JPG_RECV } sState = S_IDLE;
   uint8_t sCmd  = 0;
   uint16_t sLen = 0;
 
@@ -178,9 +206,9 @@ void setup() {
 
         switch (sCmd) {
           case CMD_IMG_START: {
-            Serial.printf("\n=== Image #%u START ===\n", imgId);
-            if (sendStartPacket(imgId)) {
-              inImage = true; totalSent = 0; endPending = false;
+            Serial.printf("\n=== Image #%u START ===\n", g_imgId);
+            if (sendStartPacket(g_imgId)) {
+              inImage = true; g_totalSent = 0; endPending = false;
               recvLen = 0; recvPos = 0;
               Serial.println("  ESP-NOW START sent");
             } else {
@@ -199,13 +227,13 @@ void setup() {
             recvIdx = Serial.read();
             recvLen = sLen - 1;
             recvPos = 0;
-            sState = S_HEAD;
+            sState = S_DATA;
             break;
           }
 
           case CMD_IMG_END: {
             if (!inImage) break;
-            Serial.printf("=== Image #%u END (queue drain) ===\n", imgId);
+            Serial.printf("=== Image #%u END (queue drain) ===\n", g_imgId);
             endPending = true;
             inImage = false;
             break;
@@ -213,7 +241,7 @@ void setup() {
 
           // ===== JPEG 模式 =====
           case CMD_JPG_START: {
-            Serial.printf("\n=== JPEG Image #%u START ===\n", imgId);
+            Serial.printf("\n=== JPEG Image #%u START ===\n", g_imgId);
             if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
 
             if (sLen < 2) break;
@@ -225,8 +253,8 @@ void setup() {
             }
             jpgRecvSize = 0;
 
-            if (sendStartPacket(imgId)) {
-              inImage = true; totalSent = 0; endPending = false;
+            if (sendStartPacket(g_imgId)) {
+              inImage = true; g_totalSent = 0; endPending = false;
               sState = S_JPG_RECV;
               Serial.printf("  Receiving %d bytes JPEG...\n", jpgTotalSize);
             } else {
@@ -244,13 +272,7 @@ void setup() {
         break;
       }
 
-      case S_HEAD: {
-        if (!Serial.available()) break;
-        sState = S_DATA;
-        break;
-      }
-
-      case S_DATA: {
+case S_DATA: {
         while (recvPos < (int)recvLen && Serial.available()) {
           recvBuf[recvPos++] = Serial.read();
         }
@@ -305,22 +327,22 @@ void setup() {
     if (!isSendBusy() && !qEmpty()) {
       int si; const uint8_t *data;
       qPop(&si, &data);
-      beginSendStrip(imgId, si, data);
+      beginSendStrip(g_imgId, si, data);
     }
     if (isSendBusy()) {
-      int st = pollSendStrip(imgId);
-      if (st == 1) totalSent += getSendCount();
+      int st = pollSendStrip(g_imgId);
+      if (st == 1) g_totalSent += getSendCount();
     }
 
     // ================ 图片结束 ================
     if (endPending && qEmpty() && !isSendBusy()) {
-      bool ok = sendEndPacket(imgId, totalSent);
-      Serial.printf("=== Image #%u END, sent: %d ===\n", imgId, totalSent);
+      bool ok = sendEndPacket(g_imgId, g_totalSent);
+      Serial.printf("=== Image #%u END, sent: %d ===\n", g_imgId, g_totalSent);
       if (!ok) Serial.println("  WARNING: END failed!");
       Serial.println();
       endPending = false;
-      imgId++;
-      totalSent = 0;
+      g_imgId++;
+      g_totalSent = 0;
     }
 
     yield();

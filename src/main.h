@@ -20,6 +20,9 @@ bool sendEndPacket(uint16_t imageId, int sent);
 // LCD 显示（入队时调用）
 void displayStrip(int stripIdx, const uint8_t *pixels);
 
+// 直接发送一个 8×8 块（JPEG 解码模式用）
+bool sendImageBlock(uint16_t imageId, int stripIdx, int blockIdx, const uint8_t *blockPixels);
+
 // ===== 异步 ESP-NOW 发送（队列模式用） =====
 // beginSendStrip: 开始发送一个 strip 的所有块
 // pollSendStrip:  轮询进度，返回 0=发送中 1=完成 -1=全丢

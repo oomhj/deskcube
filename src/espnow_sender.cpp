@@ -88,6 +88,31 @@ bool sendEndPacket(uint16_t imageId, int sent) {
 }
 
 // =====================================================================
+// 直接发送一个 8×8 块（JPEG 解码模式用）
+// =====================================================================
+
+bool sendImageBlock(uint16_t imageId, int stripIdx, int blockIdx, const uint8_t *blockPixels) {
+    EspnowImagePacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type     = PKT_IMAGE_DATA;
+    pkt.header.imageId  = imageId;
+    pkt.header.seq      = stripIdx * BLOCKS_PER_STRIP + blockIdx;
+    pkt.header.total    = TOTAL_PACKETS;
+    pkt.header.stripIdx = stripIdx;
+    pkt.header.blockIdx = blockIdx;
+    pkt.header.w        = BLOCK_W;
+    pkt.header.h        = BLOCK_H;
+
+    memcpy(pkt.data, blockPixels, BLOCK_DATA_BYTES);
+
+    for (int r = 0; r < 3; r++) {
+        if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) return true;
+        delay(5);
+    }
+    return false;
+}
+
+// =====================================================================
 // LCD 显示（用于串口传图队列模式）
 // =====================================================================
 
