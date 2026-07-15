@@ -13,6 +13,9 @@
 static TFT_eSPI *lcd = NULL;
 static TFT_eSprite *strip = NULL;   // 8×240 行缓冲区，同时用于显示和发送
 
+// 对端 MAC（单播用）
+static uint8_t peerAddr[6];
+
 static volatile bool sendDone = false;
 static volatile bool sendSuccess = false;
 
@@ -36,6 +39,9 @@ void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
     esp_now_register_send_cb(onDataSent);
     esp_now_add_peer((uint8_t *)peerMac, ESP_NOW_ROLE_SLAVE, channel, NULL, 0);
 
+    // 保存对端 MAC 供 sendPacket 单播使用
+    memcpy(peerAddr, peerMac, 6);
+
     Serial.println("[Sender] ESP-NOW initialized");
     Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
     Serial.printf("  Peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -47,10 +53,13 @@ void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
 
 static bool sendPacket(uint8_t *data, int len) {
     sendDone = false;
-    esp_now_send(NULL, data, len);
+    esp_now_send(peerAddr, data, len);  // 单播，等待硬件 ACK
     unsigned long start = millis();
     while (!sendDone) {
-        if (millis() - start > 100) return false;
+        if (millis() - start > 200) {   // 超时 200ms
+            sendSuccess = false;
+            break;
+        }
         yield();
     }
     return sendSuccess;
@@ -128,10 +137,10 @@ void sendImage(uint16_t imageId, int waitMs) {
             }
 
             bool ok = false;
-            for (int r = 0; r < 3; r++) {
+            for (int r = 0; r < 5; r++) {
                 if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) { ok = true; break; }
                 retries++;
-                delay(2);
+                delay(8);
             }
             if (ok) sent++;
             delay(waitMs);

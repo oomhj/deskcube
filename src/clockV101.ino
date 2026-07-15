@@ -5,6 +5,9 @@
 
 #define VERSION "V101"
 
+// 接收端 MAC 地址（从接收端串口获取）
+#define RECEIVER_MAC  {0x8C, 0x4F, 0x00, 0x53, 0xA3, 0x18}
+
 // ===================== 接收端 =====================
 #if defined(ESPNOW_MODE_RECEIVER)
 
@@ -38,8 +41,7 @@ void setup()
   tft.fillScreen(TFT_BLACK);
   delay(100);
 
-  // 对端 MAC 地址（先用广播，实际使用时替换为接收端 MAC）
-  uint8_t peerMac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  uint8_t peerMac[] = RECEIVER_MAC;
 
   espnowSenderInit(peerMac, &tft);
 

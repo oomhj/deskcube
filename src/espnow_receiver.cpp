@@ -23,6 +23,9 @@ static ReceiverState rxState;
 static TFT_eSPI *lcd = NULL;
 static TFT_eSprite *block = NULL;   // 8×8 块缓冲区
 
+// 去重：每行最后收到的 blockIdx
+static uint16_t lastSeq[TOTAL_STRIPS];
+
 static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len);
 
 void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
@@ -96,13 +99,23 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
             rxState.complete      = false;
             rxState.startTime     = millis();
 
-            lcd->fillScreen(TFT_BLACK);
+            // 重置去重表
+            memset(lastSeq, 0xFF, sizeof(lastSeq));
             break;
         }
 
         case PKT_IMAGE_DATA: {
             if (!rxState.receiving) return;
-            handleDataPacket((EspnowImagePacket *)data);
+
+            EspnowImagePacket *pkt = (EspnowImagePacket *)data;
+            uint8_t si = pkt->header.stripIdx;
+            uint8_t bi = pkt->header.blockIdx;
+
+            // 去重：同一行中 blockIdx 不递增则为重复包
+            if (bi <= lastSeq[si]) return;
+            lastSeq[si] = bi;
+
+            handleDataPacket(pkt);
             break;
         }
 
