@@ -301,7 +301,9 @@ case S_DATA: {
 
           if (jpgBuf) {
             // 第一步：基座本地 LCD 解码显示
+            tft.setSwapBytes(true);
             TJpgDec.drawJpg(0, 0, jpgBuf, jpgTotalSize);
+            tft.setSwapBytes(false);
             Serial.println("  Local display OK");
 
             // 第二步：ESP-NOW 转发 JPEG 到接收机
