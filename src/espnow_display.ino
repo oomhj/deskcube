@@ -60,6 +60,12 @@ static bool qPop(int *stripIdx, const uint8_t **data) {
 // =====================================================================
 // JPEG 解码
 // =====================================================================
+#include <TJpg_Decoder.h>
+static bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
+    tft.pushImage(x, y, w, h, bitmap);
+    return true;
+}
+
 // 串口接收缓冲
 static uint8_t recvBuf[STRIP_BUFFER_BYTES];
 static int     recvPos = 0, recvIdx = 0;
@@ -108,6 +114,7 @@ void setup() {
   }
 
   espnowSenderInit(peerMac, &tft);
+  TJpgDec.setCallback(tftOutput);
 
   Serial.println("[Base] Queue+JPEG forward mode (Q_SIZE=4, RX_BUF=4096)");
 
@@ -257,15 +264,20 @@ case S_DATA: {
           jpgChunkRemain--;
         }
         if (jpgRecvSize >= jpgTotalSize) {
-          Serial.printf("  JPEG received (%d bytes), sending via ESP-NOW...\n", jpgRecvSize);
+          Serial.printf("  JPEG received (%d bytes)\n", jpgRecvSize);
 
           if (jpgBuf) {
+            // 第一步：基座本地 LCD 解码显示
+            TJpgDec.drawJpg(0, 0, jpgBuf, jpgTotalSize);
+            Serial.println("  Local display OK");
+
+            // 第二步：ESP-NOW 转发 JPEG 到接收机
             bool ok = sendJpegFile(g_imgId, jpgBuf, jpgTotalSize);
-            Serial.printf("  ESP-NOW JPEG %s\n", ok ? "OK" : "FAILED");
+            Serial.printf("  ESP-NOW forward %s\n", ok ? "OK" : "FAILED");
           }
           if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
 
-          // 收齐后直接回 30 个 ACK（接收机解码后自动显示）
+          // 收齐后回 30 个 ACK
           for (int i = 0; i < 30; i++) Serial.write(0x06);
 
           sState = S_IDLE;
