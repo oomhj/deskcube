@@ -17,10 +17,12 @@ static uint8_t peerAddr[6];
 
 static volatile bool sendDone = false;
 static volatile bool sendSuccess = false;
+static volatile int  sendEvents = 0;   // ISR 事件计数器（防竞态）
 
 static void onDataSent(uint8_t *mac_addr, uint8_t status) {
     sendDone = true;
     sendSuccess = (status == 0);
+    sendEvents++;
 }
 
 void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
@@ -131,19 +133,20 @@ static void buildBlock(uint16_t imageId, int stripIdx, int blockIdx,
 
 // 异步发送状态
 typedef struct {
-    const uint8_t *pixels;     // 当前 strip 像素数据（指向队列条目）
-    int stripIdx;
-    int blockIdx;              // 0~29
-    int retries;               // 当前块已重试次数
-    int sent;                  // 成功发送的块数
-    unsigned long blockStart;  // 当前块的开始时间
-    bool blockBusy;            // 是否有块发送正在进行
+    uint8_t  pixels[STRIP_BUFFER_BYTES]; // 像素数据副本（避免队列回绕覆写）
+    int      stripIdx;
+    int      blockIdx;              // 0~29
+    int      retries;               // 当前块已重试次数
+    int      sent;                  // 成功发送的块数
+    unsigned long blockStart;       // 当前块的开始时间
+    bool     blockBusy;             // 是否有块发送正在进行
 } AsyncSendState;
 
 static AsyncSendState as = {0};
+static int lastSendEvents = 0;     // 上次处理的事件计数
 
 void beginSendStrip(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
-    as.pixels    = pixels;
+    memcpy(as.pixels, pixels, STRIP_BUFFER_BYTES);  // 关键：复制而非保存指针
     as.stripIdx  = stripIdx;
     as.blockIdx  = 0;
     as.retries   = 0;
@@ -159,44 +162,48 @@ int  getSendCount() { return as.sent; }
  * @return  0 = 发送中, 1 = 完成, -1 = 失败（所有块都丢了）
  */
 int pollSendStrip(uint16_t imageId) {
-    // --- 等待当前块完成 ---
+    // --- 等待当前块完成（基于事件计数器，防 ISR 竞态）---
     if (as.blockBusy) {
-        if (!sendDone) {
-            // 仍在等待，检查超时
-            if (millis() - as.blockStart > 200) {
-                sendSuccess = false;
-                sendDone = true;  // 强制结束
-            } else {
-                return 0;  // 还在传
-            }
-        }
-
-        sendDone = false;
-
-        if (sendSuccess) {
-            as.sent++;
-            as.blockIdx++;
-            as.retries = 0;
-        } else {
-            as.retries++;
-            if (as.retries >= 3) {
-                as.blockIdx++;  // 跳过此块
+        if (sendEvents != lastSendEvents) {
+            // 有新的事件发生
+            lastSendEvents = sendEvents;
+            if (sendSuccess) {
+                as.sent++;
+                as.blockIdx++;
                 as.retries = 0;
+            } else {
+                as.retries++;
+                if (as.retries >= 3) {
+                    as.blockIdx++;  // 跳过此块
+                    as.retries = 0;
+                }
+            }
+            as.blockBusy = false;
+        } else {
+            // 尚未完成，检查超时
+            if (millis() - as.blockStart > 200) {
+                lastSendEvents = sendEvents;  // 消费可能延迟的旧事件
+                as.retries++;
+                if (as.retries >= 3) {
+                    as.blockIdx++;
+                    as.retries = 0;
+                }
+                as.blockBusy = false;
+            } else {
+                return 0;  // 仍在等待
             }
         }
-        as.blockBusy = false;
     }
 
     // --- 检查是否全部完成 ---
     if (as.blockIdx >= BLOCKS_PER_STRIP) {
-        return (as.sent > 0) ? 1 : -1;  // 完成(至少发了1块) or 全丢
+        return (as.sent > 0) ? 1 : -1;
     }
 
     // --- 发送下一块 ---
     EspnowImagePacket pkt;
     buildBlock(imageId, as.stripIdx, as.blockIdx, as.pixels, &pkt);
 
-    sendDone = false;
     esp_now_send(peerAddr, (uint8_t *)&pkt, sizeof(pkt));
     as.blockStart = millis();
     as.blockBusy  = true;
@@ -246,11 +253,18 @@ void sendImage(uint16_t imageId, int waitMs) {
         fillStrip(imageId, stripIdx);
         strip->pushSprite(0, stripIdx * STRIP_H);
 
-        // 用同步方式发
         EspnowImagePacket pkt;
         for (int blockIdx = 0; blockIdx < BLOCKS_PER_STRIP; blockIdx++) {
-            buildBlock(imageId, stripIdx, blockIdx, NULL, &pkt);
-            // 自测模式从 strip sprite 读像素
+            memset(&pkt, 0, sizeof(pkt));
+            pkt.header.type     = PKT_IMAGE_DATA;
+            pkt.header.imageId  = imageId;
+            pkt.header.seq      = stripIdx * BLOCKS_PER_STRIP + blockIdx;
+            pkt.header.total    = TOTAL_PACKETS;
+            pkt.header.stripIdx = stripIdx;
+            pkt.header.blockIdx = blockIdx;
+            pkt.header.w        = BLOCK_W;
+            pkt.header.h        = BLOCK_H;
+            // 从 strip sprite 读像素
             int idx = 0;
             for (int py = 0; py < BLOCK_W; py++) {
                 for (int px = 0; px < BLOCK_H; px++) {
