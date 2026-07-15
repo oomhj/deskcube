@@ -69,7 +69,8 @@ static uint16_t recvLen = 0;
 
 static uint8_t *jpgBuf = NULL;        // malloc'd JPEG 数据缓冲区
 static int      jpgTotalSize = 0;     // JPEG 文件总字节数
-static int      jpgRecvSize = 0;      // 已接收字节数
+static int      jpgRecvSize = 0;      // 已接收 JPEG 字节数
+static int      jpgChunkRemain = 0;   // 当前 CMD_JPG_DATA 帧剩余 payload 字节
 static unsigned long jpgRecvStart = 0; // 接收开始时间（超时用）
 static bool     jpgDecoding = false;  // 正在解码
 
@@ -272,6 +273,7 @@ void setup() {
               break;
             }
             jpgRecvSize = 0;
+            jpgChunkRemain = 0;
             jpgRecvStart = millis();
 
             if (sendStartPacket(g_imgId)) {
@@ -319,8 +321,25 @@ case S_DATA: {
           sState = S_IDLE;
           break;
         }
-        while (jpgRecvSize < jpgTotalSize && Serial.available()) {
+        // CMD_JPG_DATA 帧解析：只提取 payload，跳过 3 字节头
+        if (jpgChunkRemain == 0) {
+          // 等待新帧头
+          if (Serial.available() < 3) break;
+          uint8_t c = Serial.read();
+          uint16_t chunkLen = Serial.read() | (Serial.read() << 8);
+          if (c != CMD_JPG_DATA) {
+            Serial.printf("  ERROR: expected JPG_DATA, got 0x%02X\n", c);
+            if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
+            sState = S_IDLE;
+            break;
+          }
+          int need = jpgTotalSize - jpgRecvSize;
+          jpgChunkRemain = (chunkLen < need) ? chunkLen : need;
+        }
+        // 消费当前 chunk 的 payload 字节
+        while (jpgChunkRemain > 0 && Serial.available() && jpgRecvSize < jpgTotalSize) {
           jpgBuf[jpgRecvSize++] = Serial.read();
+          jpgChunkRemain--;
         }
         if (jpgRecvSize >= jpgTotalSize) {
           Serial.printf("  JPEG received (%d bytes), decoding...\n", jpgRecvSize);
