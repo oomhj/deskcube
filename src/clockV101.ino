@@ -772,22 +772,9 @@ bool smart_config()
 // 切换背景色，切换字体颜色
 void change_color()
 {
-  if (Gif_Mode == 5)
-  {
-    // frontColor = TFT_YELLOW; // 背景颜色
-    bgColor = TFT_BLACK; // 前景颜色
-  }
-  else
-  {
-    // frontColor = TFT_BLACK; // 背景颜色
-    bgColor = 0xFFFF; // 前景颜色
-  }
-
-  // tft.fillScreen(0x0000);                // 清屏
-  // tft.setTextColor(frontColor, bgColor); // 设置字体颜色
-
-  // TJpgDec.drawJpg(0, 0, watchtop, sizeof(watchtop));         // 显示顶部图标 240*20
-  // TJpgDec.drawJpg(0, 220, watchbottom, sizeof(watchbottom)); // 显示底部图标 240*20
+  // 全局统一：黑底白字
+  frontColor = TFT_WHITE;
+  bgColor = TFT_BLACK;
 
   // 绘制一个窗口
   tft.setViewport(0, 20, 240, 202);              // 中间的显示区域大小
@@ -1051,12 +1038,17 @@ void setup()
   if (wifiConf.frontColor != 0 && wifiConf.frontColor != 0xFFFF)
     frontColor = wifiConf.frontColor;
   else
-    frontColor = TFT_RED;
+    frontColor = TFT_WHITE;
 
   tft.init();                            // TFT初始化
-  tft.setRotation(2);                    // 旋转角度0-3
+  tft.setRotation(0);                    // 旋转角度0-3
   tft.fillScreen(0x0000);                // 清屏
   tft.setTextColor(frontColor, bgColor); // 设置字体颜色
+
+  // === LCD 32x32 块测试（纯测试，不进时钟）===
+  lcdBlockTest();
+  Serial.println("LCD 32x32 块测试完成，停留在测试画面");
+  while (1) { delay(1000); }
 
   connect_wifi(); // 联网处理
 
@@ -1161,4 +1153,80 @@ void loop()
   mqtt_client.loop();
   // http server
   esp8266_server.handleClient();
+}
+
+// ============================================================
+// LCD 块颜色测试 — 图片缓存区方案（Sprite）
+// FPS 只输出到串口，屏幕不显示任何文字
+// ============================================================
+void lcdBlockTest()
+{
+  const int BLOCK_SIZE = 40;
+  const int COLS = 240 / BLOCK_SIZE;  // 6 列
+  const int ROWS = 240 / BLOCK_SIZE;  // 6 行
+  const int TOTAL_BLOCKS = COLS * ROWS;
+
+  // 先清屏为黑色
+  tft.fillScreen(TFT_BLACK);
+
+  // === 创建图片缓存区（Sprite）===
+  // 分配 BLOCK_SIZE * BLOCK_SIZE * 2 字节的 RAM
+  TFT_eSprite block(&tft);
+  block.createSprite(BLOCK_SIZE, BLOCK_SIZE);
+
+  // 初始化随机种子
+  randomSeed(micros());
+
+  // 帧率计数变量
+  unsigned long frameCount = 0;
+  unsigned long lastSerialTime = millis();
+
+  while (1)  // 持续循环，画面不断变动
+  {
+    // 记录单帧开始时间
+    unsigned long frameStart = micros();
+
+    for (int idx = 0; idx < TOTAL_BLOCKS; idx++)
+    {
+      int row = idx / COLS;
+      int col = idx % COLS;
+      int x = col * BLOCK_SIZE;
+      int y = row * BLOCK_SIZE;
+
+      // 生成随机 RGB565 颜色
+      uint16_t randColor = random(0, 65536);
+
+      // 在内存中填充 Sprite 缓冲区
+      block.fillSprite(randColor);
+      // 画白色边框
+      block.drawRect(0, 0, BLOCK_SIZE, BLOCK_SIZE, TFT_WHITE);
+
+      // 一次性推送到 LCD
+      block.pushSprite(x, y);
+    }
+
+    // 单帧结束时间
+    unsigned long frameEnd = micros();
+    unsigned long frameUs = frameEnd - frameStart;
+    float frameMs = frameUs / 1000.0;
+    float fps = 1000.0 / frameMs;
+
+    frameCount++;
+
+    // 每秒通过串口输出一次 FPS
+    unsigned long now = millis();
+    if (now - lastSerialTime >= 1000)
+    {
+      Serial.print("Frame: ");
+      Serial.print(frameCount);
+      Serial.print("  Time: ");
+      Serial.print(frameMs);
+      Serial.print(" ms  FPS: ");
+      Serial.println(fps);
+      lastSerialTime = now;
+    }
+  }
+
+  // 不会执行到这里
+  block.deleteSprite();
 }
