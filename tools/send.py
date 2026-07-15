@@ -167,13 +167,19 @@ def send_image_via_serial(ser, strips, verbose=True):
     return True
 
 
-def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512):
-    """通过串口发送 JPEG 文件，基站解码后入队 ESP-NOW"""
-    with open(jpg_path, 'rb') as f:
-        jpg_data = f.read()
+def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512, quality=70):
+    """加载图片 → 缩放到 240×240 → JPEG 编码 → 串口发送"""
+    img = Image.open(jpg_path).convert('RGB')
+    img = img.resize((IMG_WIDTH, IMG_HEIGHT), Image.LANCZOS)
+
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=quality)
+    jpg_data = buf.getvalue()
 
     if verbose:
-        print(f'Sending JPEG ({len(jpg_data)} bytes, {len(jpg_data)//chunk_size+1} chunks)...')
+        print(f'JPEG: {jpg_path} → {IMG_WIDTH}×{IMG_HEIGHT} ({len(jpg_data)} bytes,'
+              f' Q={quality}, {len(jpg_data)//chunk_size+1} chunks)')
 
     # CMD_JPG_START: 头部带 JPEG 总字节数
     send_serial_packet(ser, CMD_JPG_START, struct.pack('<H', len(jpg_data)))

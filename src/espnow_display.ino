@@ -274,11 +274,19 @@ void setup() {
 
           // 解码（输出回调填充 strip 并入队）
           jpgDecoding = true;
-          TJpgDec.drawJpg(0, 0, jpgBuf, jpgTotalSize);
+          if (jpgBuf) {
+            JRESULT jr = TJpgDec.drawJpg(0, 0, jpgBuf, jpgTotalSize);
+            if (jr != JDR_OK) {
+              Serial.printf("  JPEG decode ERROR: %d\n", jr);
+            } else {
+              Serial.println("  JPEG decode OK");
+            }
+          } else {
+            Serial.println("  JPEG ERROR: jpgBuf is NULL (malloc failed?)");
+          }
           jpgDecoding = false;
 
-          free(jpgBuf); jpgBuf = NULL;
-          Serial.println("  JPEG decode done");
+          if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
           sState = S_IDLE;
         }
         break;
