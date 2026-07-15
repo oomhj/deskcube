@@ -165,14 +165,7 @@ bool sendJpegFile(uint16_t imageId, const uint8_t *jpgData, int jpgSize) {
 // =====================================================================
 
 void displayStrip(int stripIdx, const uint8_t *pixels) {
-    int idx = 0;
-    for (int py = 0; py < STRIP_H; py++) {
-        for (int px = 0; px < IMG_WIDTH; px++) {
-            uint16_t c = pixels[idx] | (pixels[idx + 1] << 8);
-            idx += 2;
-            strip->drawPixel(px, py, c);
-        }
-    }
+    strip->pushImage(0, 0, IMG_WIDTH, STRIP_H, (uint16_t *)pixels);
     strip->pushSprite(0, stripIdx * STRIP_H);
 }
 

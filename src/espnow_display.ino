@@ -62,28 +62,30 @@ static bool qPop(int *stripIdx, const uint8_t **data) {
 // =====================================================================
 #include <TJpg_Decoder.h>
 
-// 8×8 块 Sprite：每解出一个块立即推送到 LCD
-static TFT_eSprite jpgBlock(&tft);
+// 16 行缓冲：适应 8×8 或 16×16 MCU，凑满一行后按 8 高 strip 切分
+static uint8_t jpgRowBuf[IMG_WIDTH * 16 * 2];
+static int     jpgTileH = 0;
 
 static bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-    // TJpg_Decoder 可能输出 16×16 或 8×8 tile，拆成 8×8 子块
-    for (int by = 0; by < h; by += 8) {
-        for (int bx = 0; bx < w; bx += 8) {
-            int absX = x + bx;
-            int absY = y + by;
+    if (jpgTileH == 0) {
+        jpgTileH = h;
+        memset(jpgRowBuf, 0, sizeof(jpgRowBuf));
+    }
 
-            // 逐个像素写入 8×8 Sprite
-            for (int py = 0; py < 8 && (by + py) < h; py++) {
-                for (int px = 0; px < 8 && (bx + px) < w; px++) {
-                    int srcOff = ((by + py) * w + (bx + px)) * 2;
-                    uint16_t c = ((uint8_t *)bitmap)[srcOff] |
-                                 (((uint8_t *)bitmap)[srcOff + 1] << 8);
-                    jpgBlock.drawPixel(px, py, c);
-                }
-            }
-            // 立即推送到 LCD 对应位置
-            jpgBlock.pushSprite(absX, absY);
+    // 直接把 tile 像素拷贝到行缓冲的对应位置
+    for (int row = 0; row < h; row++) {
+        memcpy(jpgRowBuf + row * IMG_WIDTH * 2 + x * 2,
+               (uint8_t *)bitmap + row * w * 2, w * 2);
+    }
+
+    // 最后一列 → 切分成 8 高 strip 推送到 LCD
+    if (x + w >= IMG_WIDTH) {
+        for (int si = 0; si < h / 8; si++) {
+            int stripIdx = y / 8 + si;
+            displayStrip(stripIdx, jpgRowBuf + si * STRIP_BUFFER_BYTES);
         }
+        // 保留剩余行（16×16 tile 的下半已处理，下一轮 tile 从新行开始）
+        jpgTileH = 0;
     }
     return true;
 }
@@ -136,7 +138,6 @@ void setup() {
   }
 
   espnowSenderInit(peerMac, &tft);
-  jpgBlock.createSprite(8, 8);
   TJpgDec.setCallback(tftOutput);
 
   Serial.println("[Base] Queue+JPEG forward mode (Q_SIZE=4, RX_BUF=4096)");
