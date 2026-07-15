@@ -149,7 +149,7 @@ void setup() {
   espnowSenderInit(peerMac, &tft);
   TJpgDec.setCallback(jpegOutput);
 
-  Serial.println("[Base] Queue+JPEG mode (Q_SIZE=8, RX_BUF=4096)");
+  Serial.println("[Base] Queue+JPEG mode (Q_SIZE=4, RX_BUF=4096)");
 
   // =================================================================
   // 主循环
