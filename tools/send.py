@@ -69,8 +69,11 @@ def config_base(port, mac, timeout=10):
 
 
 def send_serial_packet(ser, cmd, payload=b''):
-    """发送串口协议包"""
-    ser.write(bytes([cmd]) + struct.pack('<H', len(payload)) + payload)
+    """发送串口协议包（带 XOR 校验）"""
+    pkt = bytes([cmd]) + struct.pack('<H', len(payload)) + payload
+    xor = cmd ^ (len(payload) & 0xFF) ^ ((len(payload) >> 8) & 0xFF)
+    for b in payload: xor ^= b
+    ser.write(pkt + bytes([xor & 0xFF]))
     ser.flush()
 
 
