@@ -177,6 +177,40 @@ def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512, quality=70
     img.save(buf, format='JPEG', quality=quality)
     jpg_data = buf.getvalue()
 
+def send_raw_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512):
+    """直接发送 JPEG 文件（不进行缩放/编码），文件必须已是 240×240"""
+    with open(jpg_path, 'rb') as f:
+        jpg_data = f.read()
+
+    if verbose:
+        print(f'Raw JPEG: {jpg_path} ({len(jpg_data)} bytes, '
+              f'{len(jpg_data)//chunk_size+1} chunks)')
+
+    send_serial_packet(ser, CMD_JPG_START, struct.pack('<H', len(jpg_data)))
+    if verbose:
+        print(f'  JPG START ({len(jpg_data)} bytes)')
+
+    for offset in range(0, len(jpg_data), chunk_size):
+        chunk = jpg_data[offset:offset + chunk_size]
+        send_serial_packet(ser, CMD_JPG_DATA, chunk)
+    if verbose:
+        print(f'  JPG DATA sent')
+
+    total_acks = 0
+    while total_acks < TOTAL_STRIPS:
+        if wait_strip_ack(ser):
+            total_acks += 1
+            if verbose and (total_acks % 5 == 0 or total_acks == TOTAL_STRIPS):
+                print(f'  Strip {total_acks}/{TOTAL_STRIPS} ✓')
+        else:
+            print(f'\n  ERROR: ACK timeout on strip {total_acks}')
+            return False
+
+    send_serial_packet(ser, CMD_IMG_END)
+    if verbose:
+        print(f'  END')
+    return True
+
     if verbose:
         print(f'JPEG: {jpg_path} → {IMG_WIDTH}×{IMG_HEIGHT} ({len(jpg_data)} bytes,'
               f' Q={quality}, {len(jpg_data)//chunk_size+1} chunks)')
@@ -288,30 +322,36 @@ def main():
     # --- 发送图片 ---
     image_file = None
     use_jpeg = False
+    use_raw_jpeg = False
     if len(sys.argv) >= 4:
         image_file = sys.argv[3]
     elif len(sys.argv) >= 3 and os.path.isfile(sys.argv[2]):
         image_file = sys.argv[2]
 
-    # 自动检测 JPEG 文件或 --jpeg 标志
-    if image_file:
-        if image_file == '--jpeg':
+    # 标志检测
+    for arg in sys.argv:
+        if arg == '--jpeg':
             use_jpeg = True
-            image_file = None  # 后面的 arg 才是真正的文件
-            for arg in sys.argv[1:]:
-                if os.path.isfile(arg):
-                    image_file = arg
-                    break
-        else:
-            with open(image_file, 'rb') as _f:
-                if _f.read(3) == JPEG_MAGIC:
-                    use_jpeg = True
+        if arg == '--raw-jpeg':
+            use_raw_jpeg = True
+
+    # 自动检测 JPEG（非 raw 模式时）
+    if image_file and not use_raw_jpeg:
+        with open(image_file, 'rb') as _f:
+            if _f.read(3) == JPEG_MAGIC:
+                use_jpeg = True
 
     if image_file:
         print(f'Loading image: {image_file}')
         try:
-            if use_jpeg:
-                # JPEG 直传
+            if use_raw_jpeg:
+                # 直传 JPEG 文件（已处理为 240×240）
+                if not send_raw_jpeg_via_serial(ser, image_file):
+                    print('RAW JPEG transfer FAILED')
+                    ser.close()
+                    sys.exit(1)
+            elif use_jpeg:
+                # PIL 处理→JPEG 编码
                 if not send_jpeg_via_serial(ser, image_file):
                     print('JPEG transfer FAILED')
                     ser.close()
