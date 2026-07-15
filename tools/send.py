@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-ESP-NOW 投屏工具
-
-自动将图片压缩为 240×240 RGB565 格式，通过串口发送给基站转发到接收端。
-支持 PNG / JPG / BMP 等常见格式。
+ESP-NOW 投屏工具（JPEG 模式）
 
 用法:
-  # 自动读取接收端 MAC + 传图（无图片则基站自生成）
-  python3 tools/send.py /dev/cu.usbserial-1140                          # 使用已保存的 MAC
-  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18        # 指定 MAC
-  python3 tools/send.py /dev/cu.usbserial-1130 /dev/cu.usbserial-1140   # 自动读取接收端 MAC
+  # 直传 JPEG（文件必须是 240×240）
+  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 --raw-jpeg image.jpg
 
-  # 发送图片文件（自动缩放至 240×240）
-  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.jpg
-  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 ~/Pictures/test.png
+  # PIL 缩放 + JPEG 编码
+  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.png
+  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 --jpeg photo.png
 """
 
 import sys
@@ -24,24 +19,18 @@ import os
 import struct
 from PIL import Image
 
-# JPEG 文件头魔数
-JPEG_MAGIC = b'\xff\xd8\xff'
-
-
 # === 协议常量 ===
 CMD_IMG_START  = 0x01
-CMD_STRIP_DATA = 0x02
 CMD_IMG_END    = 0x03
 CMD_JPG_START  = 0x10
 CMD_JPG_DATA   = 0x11
 
-IMG_WIDTH  = 240
-IMG_HEIGHT = 240
-STRIP_H    = 8
-STRIP_BYTES  = IMG_WIDTH * STRIP_H * 2  # 3840
-TOTAL_STRIPS = IMG_HEIGHT // STRIP_H    # 30
+IMG_WIDTH   = 240
+IMG_HEIGHT  = 240
+TOTAL_STRIPS = 30
 
 MAC_FILE = os.path.join(os.path.dirname(__file__), 'receiver_mac.txt')
+STRIP_ACK_TIMEOUT = float(os.environ.get('STRIP_ACK_TIMEOUT', '30.0'))
 
 
 # ======================================================================
@@ -51,134 +40,56 @@ MAC_FILE = os.path.join(os.path.dirname(__file__), 'receiver_mac.txt')
 def read_mac_from_receiver(port, timeout=5):
     """复位接收端，读取 MAC 地址"""
     ser = serial.Serial(port, 115200, timeout=2)
-    ser.dtr = False
-    time.sleep(0.3)
-    ser.dtr = True
-    ser.reset_input_buffer()
-
+    ser.dtr = False; time.sleep(0.3)
+    ser.dtr = True; ser.reset_input_buffer()
     deadline = time.time() + timeout
     while time.time() < deadline:
         line = ser.readline().decode('utf-8', errors='replace').strip()
-        m = re.search(
-            r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:'
-            r'[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})', line
-        )
-        if m:
-            ser.close()
-            return m.group(1).upper()
+        m = re.search(r'([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:'
+                       r'[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})', line)
+        if m: ser.close(); return m.group(1).upper()
         time.sleep(0.1)
-    ser.close()
-    return None
+    ser.close(); return None
 
 
 def config_base(port, mac, timeout=10):
     """配置基站 MAC 地址"""
     ser = serial.Serial(port, 115200, timeout=2)
     ser.reset_input_buffer()
-
     deadline = time.time() + timeout
     prompted = False
     while time.time() < deadline:
         data = ser.read(512).decode('utf-8', errors='replace')
-        if 'Enter receiver MAC' in data or '>' in data:
-            prompted = True
-            break
+        if 'Enter receiver MAC' in data or '>' in data: prompted = True; break
         time.sleep(0.2)
-
-    if not prompted:
-        ser.close()
-        return None
-
-    ser.write(f'{mac}\n'.encode())
-    ser.flush()
-    time.sleep(2)
-
+    if not prompted: ser.close(); return None
+    ser.write(f'{mac}\n'.encode()); ser.flush(); time.sleep(2)
     resp = ser.read(4096).decode('utf-8', errors='replace')
-    ok = 'Using MAC' in resp
-    return ser if ok else None
+    return ser if 'Using MAC' in resp else None
 
 
 def send_serial_packet(ser, cmd, payload=b''):
     """发送串口协议包"""
-    pkt = bytes([cmd]) + struct.pack('<H', len(payload)) + payload
-    ser.write(pkt)
+    ser.write(bytes([cmd]) + struct.pack('<H', len(payload)) + payload)
     ser.flush()
 
 
-def load_image_strips(path):
-    """加载图片并转换为 RGB565 逐行数据"""
-    img = Image.open(path).convert('RGB')
-    img = img.resize((IMG_WIDTH, IMG_HEIGHT), Image.LANCZOS)
-    pixels = img.load()
-
-    strips = []
-    for strip_idx in range(IMG_HEIGHT // STRIP_H):
-        data = bytearray()
-        for py in range(STRIP_H):
-            y = strip_idx * STRIP_H + py
-            for x in range(IMG_WIDTH):
-                r, g, b = pixels[x, y]
-                c = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3)
-                data += bytes([c & 0xFF, (c >> 8) & 0xFF])
-        strips.append(bytes(data))
-    return strips
-
-
-STRIP_ACK_TIMEOUT = float(os.environ.get('STRIP_ACK_TIMEOUT', '30.0'))
-
-
 def wait_strip_ack(ser):
-    """等待基站处理完一行后发回的 ACK (0x06)"""
+    """等待基站 ACK (0x06)"""
     deadline = time.time() + STRIP_ACK_TIMEOUT
     while time.time() < deadline:
         b = ser.read(1)
-        if b == b'\x06':
-            return True
-        if b == b'':
-            time.sleep(0.001)
+        if b == b'\x06': return True
+        if b == b'': time.sleep(0.001)
     return False
 
 
-def send_image_via_serial(ser, strips, verbose=True):
-    """通过串口发送完整图片，每行等待基站 ACK"""
-    if verbose:
-        print(f'Sending image ({len(strips)} strips)...')
-
-    send_serial_packet(ser, CMD_IMG_START)
-    if verbose:
-        print(f'  START')
-    # 等待基站处理 START（sendStartPacket 最多 200ms + ESP-NOW 发送）
-    time.sleep(0.5)
-
-    for idx, strip_data in enumerate(strips):
-        payload = bytes([idx]) + strip_data
-        send_serial_packet(ser, CMD_STRIP_DATA, payload)
-        if verbose and (idx % 5 == 0 or idx == len(strips) - 1):
-            print(f'  Strip {idx}/{len(strips)-1}', end='', flush=True)
-        if not wait_strip_ack(ser):
-            print(f'\n  ERROR: ACK timeout on strip {idx}')
-            return False
-        if verbose and (idx % 5 == 0 or idx == len(strips) - 1):
-            print(' ✓')
-
-    send_serial_packet(ser, CMD_IMG_END)
-    if verbose:
-        print(f'  END')
-    return True
-
-
-def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512, quality=70):
-    """加载图片 → 缩放到 240×240 → JPEG 编码 → 串口发送"""
-    img = Image.open(jpg_path).convert('RGB')
-    img = img.resize((IMG_WIDTH, IMG_HEIGHT), Image.LANCZOS)
-
-    import io
-    buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=quality)
-    jpg_data = buf.getvalue()
+# ======================================================================
+# JPEG 发送模式
+# ======================================================================
 
 def send_raw_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512):
-    """直接发送 JPEG 文件（不进行缩放/编码），文件必须已是 240×240"""
+    """直传 JPEG 文件（必须是 240×240，不做任何处理）"""
     with open(jpg_path, 'rb') as f:
         jpg_data = f.read()
 
@@ -187,84 +98,62 @@ def send_raw_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512):
               f'{len(jpg_data)//chunk_size+1} chunks)')
 
     send_serial_packet(ser, CMD_JPG_START, struct.pack('<H', len(jpg_data)))
-    if verbose:
-        print(f'  JPG START ({len(jpg_data)} bytes)')
+    if verbose: print(f'  JPG START ({len(jpg_data)} bytes)')
 
     for offset in range(0, len(jpg_data), chunk_size):
         chunk = jpg_data[offset:offset + chunk_size]
         send_serial_packet(ser, CMD_JPG_DATA, chunk)
-    if verbose:
-        print(f'  JPG DATA sent')
+    if verbose: print(f'  JPG DATA sent')
 
-    total_acks = 0
-    while total_acks < TOTAL_STRIPS:
+    total = 0
+    while total < TOTAL_STRIPS:
         if wait_strip_ack(ser):
-            total_acks += 1
-            if verbose and (total_acks % 5 == 0 or total_acks == TOTAL_STRIPS):
-                print(f'  Strip {total_acks}/{TOTAL_STRIPS} ✓')
+            total += 1
+            if verbose and (total % 5 == 0 or total == TOTAL_STRIPS):
+                print(f'  Strip {total}/{TOTAL_STRIPS} ✓')
         else:
-            print(f'\n  ERROR: ACK timeout on strip {total_acks}')
+            print(f'\n  ERROR: ACK timeout on strip {total}')
             return False
 
     send_serial_packet(ser, CMD_IMG_END)
-    if verbose:
-        print(f'  END')
+    if verbose: print(f'  END')
     return True
+
+
+def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512, quality=70):
+    """PIL 缩放 → JPEG 编码 → 串口发送"""
+    img = Image.open(jpg_path).convert('RGB')
+    img = img.resize((IMG_WIDTH, IMG_HEIGHT), Image.LANCZOS)
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=quality)
+    jpg_data = buf.getvalue()
 
     if verbose:
         print(f'JPEG: {jpg_path} → {IMG_WIDTH}×{IMG_HEIGHT} ({len(jpg_data)} bytes,'
               f' Q={quality}, {len(jpg_data)//chunk_size+1} chunks)')
 
-    # CMD_JPG_START: 头部带 JPEG 总字节数
     send_serial_packet(ser, CMD_JPG_START, struct.pack('<H', len(jpg_data)))
-    if verbose:
-        print(f'  JPG START ({len(jpg_data)} bytes)')
+    if verbose: print(f'  JPG START ({len(jpg_data)} bytes)')
 
-    # 发送 JPEG 数据分片
     for offset in range(0, len(jpg_data), chunk_size):
         chunk = jpg_data[offset:offset + chunk_size]
         send_serial_packet(ser, CMD_JPG_DATA, chunk)
-    if verbose:
-        print(f'  JPG DATA sent ({len(jpg_data)} bytes)')
+    if verbose: print(f'  JPG DATA sent')
 
-    # 等待解码 + strip ACK（每解完一条 strip 发一个 ACK）
-    total_acks = 0
-    while total_acks < TOTAL_STRIPS:
+    total = 0
+    while total < TOTAL_STRIPS:
         if wait_strip_ack(ser):
-            total_acks += 1
-            if verbose and (total_acks % 5 == 0 or total_acks == TOTAL_STRIPS):
-                print(f'  Strip {total_acks}/{TOTAL_STRIPS} ✓')
+            total += 1
+            if verbose and (total % 5 == 0 or total == TOTAL_STRIPS):
+                print(f'  Strip {total}/{TOTAL_STRIPS} ✓')
         else:
-            print(f'\n  ERROR: ACK timeout on strip {total_acks}')
+            print(f'\n  ERROR: ACK timeout on strip {total}')
             return False
 
-    # END
     send_serial_packet(ser, CMD_IMG_END)
-    if verbose:
-        print(f'  END')
+    if verbose: print(f'  END')
     return True
-
-
-def monitor_receiver(port):
-    """实时监视接收端传输统计"""
-    ser = serial.Serial(port, 115200, timeout=1)
-    ser.reset_input_buffer()
-    print(f'\nMonitoring receiver... (Ctrl+C to stop)')
-
-    try:
-        while True:
-            line = ser.readline().decode('utf-8', errors='replace').strip()
-            if not line:
-                continue
-
-            # 显示关键统计行
-            if any(kw in line for kw in
-                   ['Complete', 'Received', 'Lost', 'Speed']):
-                print(f'  {line}')
-
-    except KeyboardInterrupt:
-        print('\nDone.')
-    ser.close()
 
 
 # ======================================================================
@@ -273,112 +162,64 @@ def monitor_receiver(port):
 
 def main():
     if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+        print(__doc__); sys.exit(1)
 
-    port = sys.argv[1]       # 基站串口
+    port = sys.argv[1]
 
-    # --- 获取接收端 MAC ---
+    # --- 获取 MAC ---
     mac = None
-
-    # 方式1: 从保存的文件读取
     if os.path.exists(MAC_FILE) and len(sys.argv) < 4:
-        with open(MAC_FILE) as f:
-            mac = f.read().strip()
+        with open(MAC_FILE) as f: mac = f.read().strip()
         print(f'Using saved MAC: {mac}')
 
-    # 方式2: 从命令行参数读取
     if len(sys.argv) >= 3:
         arg2 = sys.argv[2]
-        if ':' in arg2:  # 是 MAC 格式
+        if ':' in arg2:
             mac = arg2.upper()
-        elif os.path.isfile(arg2):  # 是图片文件，使用已保存的 MAC
-            pass  # 上面方式1 已经读取了 mac 或仍为 None
-        else:  # 是接收端串口
+        elif os.path.isfile(arg2):
+            pass
+        else:
             rx_port = arg2
             print(f'Reading MAC from receiver ({rx_port})...', end=' ', flush=True)
             mac = read_mac_from_receiver(rx_port)
-            if not mac:
-                print('FAILED')
-                sys.exit(1)
+            if not mac: print('FAILED'); sys.exit(1)
             print(mac)
-            # 保存
-            with open(MAC_FILE, 'w') as f:
-                f.write(mac)
+            with open(MAC_FILE, 'w') as f: f.write(mac)
             print(f'Saved to {MAC_FILE}')
 
     if not mac:
-        print('Error: No receiver MAC. Specify MAC or receiver port.')
-        print(__doc__)
-        sys.exit(1)
+        print('Error: No receiver MAC.'); print(__doc__); sys.exit(1)
 
     # --- 配置基站 ---
     ser = config_base(port, mac)
-    if not ser:
-        print('Failed to configure base station')
-        sys.exit(1)
+    if not ser: print('Failed to configure base station'); sys.exit(1)
     print(f'Base station configured (port={port}, MAC={mac})')
 
     # --- 解析参数 ---
-    image_file = None
-    use_jpeg = False
-    use_raw_jpeg = False
-
-    # 收集非标志参数
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     flags = [a for a in sys.argv[1:] if a.startswith('--')]
-
     use_raw_jpeg = '--raw-jpeg' in flags
-    use_jpeg     = '--jpeg' in flags
 
+    image_file = None
     for a in args:
-        if os.path.isfile(a):
-            image_file = a
-            break
-
-    # 自动检测 JPEG（非 raw 模式时）
-    if image_file and not use_raw_jpeg:
-        with open(image_file, 'rb') as _f:
-            if _f.read(3) == JPEG_MAGIC:
-                use_jpeg = True
+        if os.path.isfile(a): image_file = a; break
 
     if image_file:
         print(f'Loading image: {image_file}')
         try:
             if use_raw_jpeg:
-                # 直传 JPEG 文件（已处理为 240×240）
-                if not send_raw_jpeg_via_serial(ser, image_file):
-                    print('RAW JPEG transfer FAILED')
-                    ser.close()
-                    sys.exit(1)
-            elif use_jpeg:
-                # PIL 处理→JPEG 编码
-                if not send_jpeg_via_serial(ser, image_file):
-                    print('JPEG transfer FAILED')
-                    ser.close()
-                    sys.exit(1)
+                ok = send_raw_jpeg_via_serial(ser, image_file)
             else:
-                # RGB565 模式
-                strips = load_image_strips(image_file)
-                if not send_image_via_serial(ser, strips):
-                    print('Image transfer FAILED')
-                    ser.close()
-                    sys.exit(1)
+                ok = send_jpeg_via_serial(ser, image_file)
+            if not ok:
+                print('Transfer FAILED'); ser.close(); sys.exit(1)
         except Exception as e:
-            print(f'Image error: {e}')
-            print('Falling back to base station self-generating mode')
+            print(f'Error: {e}'); ser.close(); sys.exit(1)
     else:
-        print('Base station will self-generate test pattern')
+        print('No image file specified'); print(__doc__); ser.close(); sys.exit(1)
 
     ser.close()
-    time.sleep(1)
-
-    # --- 监视 ---
-    if len(sys.argv) >= 3 and ':' not in sys.argv[2] and not image_file:
-        # 指定了接收端端口 → 监视它
-        monitor_receiver(sys.argv[2])
-    else:
-        print('\nDone. Press Ctrl+C to exit.')
+    print('\nDone.')
 
 
 if __name__ == '__main__':

@@ -1,8 +1,7 @@
 /**
- * ESP-NOW 图片接收端
+ * ESP-NOW 图片接收端（仅 JPEG 模式）
  *
- * RGB565 模式：每收到一个 8×8 块立即刷新 LCD
- * JPEG 模式：  接收分片 → 重组 → TJpg_Decoder 解码 → 全屏显示
+ * PKT_JPG_START → malloc → PKT_JPG_DATA ×N → 重组 → drawJpg → LCD
  */
 
 #include <ESP8266WiFi.h>
@@ -10,6 +9,7 @@
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
 #include "espnow_img_proto.h"
+#include "jpeg_render.h"
 
 // =====================================================================
 // 接收状态
@@ -17,26 +17,22 @@
 
 typedef struct {
     uint16_t    imageId;
-    uint16_t    totalExpected;   // RGB565: 总包数 / JPEG: 总块数
-    uint16_t    totalReceived;
+    uint16_t    totalChunks;
     unsigned long startTime;
     bool        receiving;
     bool        complete;
-    uint8_t     mode;  // 0=RGB565, 1=JPEG
 } ReceiverState;
 
 static ReceiverState rxState;
 static TFT_eSPI *lcd = NULL;
-static TFT_eSprite *block = NULL;  // 8×8 块缓冲区（RGB565 模式）
 
-// JPEG 接收
+// JPEG 接收缓冲
 static uint8_t *jpgRecvBuf = NULL;
 static int      jpgRecvTotal = 0;
 static int      jpgRecvChunks = 0;
-static int      jpgRecvSize = 0;
 
-// 去重（RGB565 模式）
-static uint16_t lastSeq[TOTAL_STRIPS];
+// 分片去重位图（最大 138 片，5×32=160bit 足够）
+static uint32_t jpgChunkSeen[5] = {0};
 
 // =====================================================================
 // 前向声明
@@ -46,29 +42,13 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len);
 static void printStats();
 
 // =====================================================================
-// JPEG 解码渲染（与基站共用 jpeg_render.h）
-// =====================================================================
-
-#include "jpeg_render.h"
-
-static bool jpgDisplay(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-    return jpegRenderCallback(x, y, w, h, bitmap);
-}
-
-// =====================================================================
 // 初始化
 // =====================================================================
 
 void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     lcd = tft;
-
-    // 8×8 块 Sprite (RGB565 模式)
-    block = new TFT_eSprite(lcd);
-    block->createSprite(BLOCK_W, BLOCK_H);
-
-    // TJpg_Decoder 输出回调（共享渲染器）
     renderTargetTFT = lcd;
-    TJpgDec.setCallback(jpgDisplay);
+    TJpgDec.setCallback(jpegRenderCallback);
 
     memset(&rxState, 0, sizeof(rxState));
 
@@ -79,52 +59,39 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
     esp_now_register_recv_cb(onDataRecv);
 
-    Serial.println("[Receiver] ESP-NOW ready (RGB565 + JPEG)");
+    Serial.println("[Receiver] ESP-NOW ready (JPEG mode)");
     Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
 }
 
 // =====================================================================
-// RGB565 块渲染
-// =====================================================================
-
-static void handleDataPacket(EspnowImagePacket *pkt) {
-    int x = pkt->header.blockIdx * BLOCK_H;
-    int y = pkt->header.stripIdx * BLOCK_W;
-
-    rxState.totalReceived++;
-
-    int idx = 0;
-    for (int py = 0; py < BLOCK_W; py++) {
-        for (int px = 0; px < BLOCK_H; px++) {
-            uint16_t color = pkt->data[idx] | (pkt->data[idx + 1] << 8);
-            idx += 2;
-            block->drawPixel(px, py, color);
-        }
-    }
-    block->pushSprite(x, y);
-}
-
-// =====================================================================
-// JPEG 块接收
+// JPEG 分片接收
 // =====================================================================
 
 static void handleJpgData(EspnowJpgPacket *pkt) {
-    if (!rxState.receiving || rxState.mode != 1) return;
+    if (!rxState.receiving) return;
     if (pkt->header.imageId != rxState.imageId) return;
 
-    int offset = pkt->header.seq * JPG_CHUNK_DATA_BYTES;
+    uint16_t seq = pkt->header.seq;
+
+    // 去重
+    int w = seq / 32, b = seq % 32;
+    if (w < 5) {
+        if (jpgChunkSeen[w] & (1UL << b)) return;
+        jpgChunkSeen[w] |= (1UL << b);
+    }
+
+    int offset = seq * JPG_CHUNK_DATA_BYTES;
     int chunkLen = jpgRecvTotal - offset;
     if (chunkLen > JPG_CHUNK_DATA_BYTES) chunkLen = JPG_CHUNK_DATA_BYTES;
 
-    if (jpgRecvBuf && offset + chunkLen <= jpgRecvTotal) {
+    if (jpgRecvBuf && offset + chunkLen <= jpgRecvTotal)
         memcpy(jpgRecvBuf + offset, pkt->data, chunkLen);
-        jpgRecvSize += chunkLen;
-    }
+
     jpgRecvChunks++;
 
-    // 所有分片收齐 → 解码显示
-    if (jpgRecvChunks >= pkt->header.total && jpgRecvBuf) {
-        Serial.printf("\n[JPEG] All chunks received (%d), decoding %d bytes...\n",
+    // 全部分片收齐 → 解码显示
+    if (jpgRecvChunks >= rxState.totalChunks && jpgRecvBuf) {
+        Serial.printf("\n[JPEG] All %d chunks, decoding %d bytes...\n",
                       jpgRecvChunks, jpgRecvTotal);
         lcd->setSwapBytes(true);
         TJpgDec.drawJpg(0, 0, jpgRecvBuf, jpgRecvTotal);
@@ -143,10 +110,9 @@ static void handleJpgData(EspnowJpgPacket *pkt) {
 
 static void printStats() {
     float elapsed = (millis() - rxState.startTime) / 1000.0;
-
     Serial.println("\n=== Transfer Complete ===");
     Serial.printf("Image ID: %u\n", rxState.imageId);
-    Serial.printf("Received: %d\n", rxState.totalReceived);
+    Serial.printf("Chunks:   %d\n", jpgRecvChunks);
     Serial.printf("Time:     %.1f s\n", elapsed);
 }
 
@@ -160,62 +126,18 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
 
     switch (hdr->type) {
 
-        // ---- RGB565 模式 ----
-        case PKT_IMAGE_START: {
-            Serial.println("\n[Receiver] <<< RGB565 START >>>");
-            rxState.imageId       = hdr->imageId;
-            rxState.totalExpected = hdr->total;
-            rxState.totalReceived = 0;
-            rxState.receiving     = true;
-            rxState.complete      = false;
-            rxState.mode          = 0;
-            rxState.startTime     = millis();
-            memset(lastSeq, 0xFF, sizeof(lastSeq));
-
-            if (jpgRecvBuf) { free(jpgRecvBuf); jpgRecvBuf = NULL; }
-            break;
-        }
-
-        case PKT_IMAGE_DATA: {
-            if (!rxState.receiving || rxState.mode != 0) return;
-            EspnowImagePacket *pkt = (EspnowImagePacket *)data;
-            if (pkt->header.imageId != rxState.imageId) return;
-
-            uint8_t si = pkt->header.stripIdx;
-            uint8_t bi = pkt->header.blockIdx;
-
-            if (lastSeq[si] != 0xFFFF && bi <= lastSeq[si]) return;
-            lastSeq[si] = bi;
-
-            handleDataPacket(pkt);
-            break;
-        }
-
-        case PKT_IMAGE_END: {
-            if (!rxState.receiving || rxState.mode != 0) return;
-            if (hdr->imageId != rxState.imageId) return;
-            Serial.println("\n[Receiver] <<< RGB565 END >>>");
-            rxState.complete = true;
-            rxState.receiving = false;
-            printStats();
-            break;
-        }
-
-        // ---- JPEG 模式 ----
         case PKT_JPG_START: {
             Serial.println("\n[Receiver] <<< JPEG START >>>");
-            rxState.imageId       = hdr->imageId;
-            rxState.totalExpected = hdr->total;
-            rxState.totalReceived = 0;
-            rxState.receiving     = true;
-            rxState.complete      = false;
-            rxState.mode          = 1;
-            rxState.startTime     = millis();
+            rxState.imageId     = hdr->imageId;
+            rxState.totalChunks = hdr->total;
+            rxState.receiving   = true;
+            rxState.complete    = false;
+            rxState.startTime   = millis();
 
             EspnowCtrlPacket *cpkt = (EspnowCtrlPacket *)data;
             jpgRecvTotal = cpkt->param;
             jpgRecvChunks = 0;
-            jpgRecvSize = 0;
+            memset(jpgChunkSeen, 0, sizeof(jpgChunkSeen));
 
             if (jpgRecvBuf) free(jpgRecvBuf);
             jpgRecvBuf = (uint8_t *)malloc(jpgRecvTotal);
@@ -223,7 +145,7 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
                 Serial.println("[JPEG] malloc failed!");
                 rxState.receiving = false;
             }
-            Serial.printf("[JPEG] Expecting %d chunks, %d bytes\n",
+            Serial.printf("[JPEG] %d chunks, %d bytes\n",
                           hdr->total, jpgRecvTotal);
             break;
         }
@@ -234,7 +156,7 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
         }
 
         case PKT_JPG_END: {
-            if (!rxState.receiving || rxState.mode != 1) return;
+            if (!rxState.receiving) return;
             if (hdr->imageId != rxState.imageId) return;
             Serial.printf("\n[JPEG] END (got %d/%d chunks)\n",
                           jpgRecvChunks, hdr->total);
@@ -260,13 +182,13 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
 }
 
 // =====================================================================
-// 查询接口
+// 查询接口（保留兼容）
 // =====================================================================
 
 bool isReceiving()        { return rxState.receiving; }
 bool isTransferComplete() { return rxState.complete; }
 int  getReceiveProgress() {
-    return rxState.totalExpected > 0
-        ? (rxState.totalReceived * 100 / rxState.totalExpected)
+    return rxState.totalChunks > 0
+        ? (jpgRecvChunks * 100 / rxState.totalChunks)
         : 0;
 }
