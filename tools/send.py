@@ -118,8 +118,23 @@ def load_image_strips(path):
     return strips
 
 
+STRIP_ACK_TIMEOUT = float(os.environ.get('STRIP_ACK_TIMEOUT', '5.0'))
+
+
+def wait_strip_ack(ser):
+    """等待基站处理完一行后发回的 ACK (0x06)"""
+    deadline = time.time() + STRIP_ACK_TIMEOUT
+    while time.time() < deadline:
+        b = ser.read(1)
+        if b == b'\x06':
+            return True
+        if b == b'':
+            time.sleep(0.001)
+    return False
+
+
 def send_image_via_serial(ser, strips, verbose=True):
-    """通过串口发送完整图片"""
+    """通过串口发送完整图片，每行等待基站 ACK"""
     if verbose:
         print(f'Sending image ({len(strips)} strips)...')
 
@@ -132,13 +147,17 @@ def send_image_via_serial(ser, strips, verbose=True):
         payload = bytes([idx]) + strip_data
         send_serial_packet(ser, CMD_STRIP_DATA, payload)
         if verbose and (idx % 5 == 0 or idx == len(strips) - 1):
-            print(f'  Strip {idx}/{len(strips)-1}')
-        # 等待基站处理（可环境变量 SERIAL_STRIP_DELAY 覆盖，单位秒）
-        time.sleep(float(os.environ.get('SERIAL_STRIP_DELAY', '0.01')))
+            print(f'  Strip {idx}/{len(strips)-1}', end='', flush=True)
+        if not wait_strip_ack(ser):
+            print(f'\n  ERROR: ACK timeout on strip {idx}')
+            return False
+        if verbose and (idx % 5 == 0 or idx == len(strips) - 1):
+            print(' ✓')
 
     send_serial_packet(ser, CMD_IMG_END)
     if verbose:
         print(f'  END')
+    return True
 
 
 def monitor_receiver(port):
@@ -226,7 +245,10 @@ def main():
         print(f'Loading image: {image_file}')
         try:
             strips = load_image_strips(image_file)
-            send_image_via_serial(ser, strips)
+            if not send_image_via_serial(ser, strips):
+                print('Image transfer FAILED')
+                ser.close()
+                sys.exit(1)
         except Exception as e:
             print(f'Image error: {e}')
             print('Falling back to base station self-generating mode')

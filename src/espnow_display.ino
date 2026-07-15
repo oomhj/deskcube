@@ -28,6 +28,12 @@ void loop()
 // ===================== 发送端 =====================
 #elif defined(ESPNOW_MODE_SENDER)
 
+static void drainSerial(uint16_t len) {
+  for (uint16_t i = 0; i < len; i++) {
+    if (Serial.read() < 0) break;
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -100,26 +106,34 @@ void setup()
     switch (cmd) {
       case CMD_IMG_START: {
         Serial.printf("\n=== Image #%u START from host ===\n", imgId);
-        bool ok = sendStartPacket(imgId);
-        inImage = true;
-        totalSent = 0;
-        if (ok) Serial.println("  ESP-NOW START sent");
+        if (sendStartPacket(imgId)) {
+          inImage = true;
+          totalSent = 0;
+          Serial.println("  ESP-NOW START sent");
+        } else {
+          Serial.println("  ERROR: START send failed - aborting image");
+        }
         break;
       }
 
       case CMD_STRIP_DATA: {
         if (!inImage) {
-          for (int i = 0; i < len; i++) Serial.read();
+          drainSerial(len);
           break;
         }
-        if (len < 1) break;
-        int stripIdx = Serial.read();
+        if (len < 1) { drainSerial(0); break; }
+        if (len > STRIP_BUFFER_BYTES + 1) {
+          Serial.printf("  ERROR: invalid len=%u (max=%u)\n", len, STRIP_BUFFER_BYTES + 1);
+          drainSerial(len);
+          break;
+        }
+        int stripIdx = Serial.peek();
+        if (stripIdx < 0 || stripIdx >= TOTAL_STRIPS) {
+          drainSerial(len);
+          break;
+        }
+        stripIdx = Serial.read();
         int dataLen = len - 1;
-
-        if (dataLen != STRIP_BUFFER_BYTES) {
-          for (int i = 0; i < dataLen; i++) Serial.read();
-          break;
-        }
 
         int readBytes = 0;
         while (readBytes < STRIP_BUFFER_BYTES) {
@@ -131,6 +145,7 @@ void setup()
         if (readBytes == STRIP_BUFFER_BYTES) {
           int sent = sendStripFromHost(imgId, stripIdx, stripBuf);
           totalSent += sent;
+          Serial.write(0x06);  // ACK → 通知宿主机发下一行
         }
         break;
       }
@@ -147,7 +162,7 @@ void setup()
       }
 
       default:
-        for (int i = 0; i < len; i++) Serial.read();
+        drainSerial(len);
         Serial.printf("Unknown cmd: 0x%02X\n", cmd);
         break;
     }
