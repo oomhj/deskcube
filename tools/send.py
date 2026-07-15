@@ -2,14 +2,18 @@
 """
 ESP-NOW 投屏工具
 
+自动将图片压缩为 240×240 RGB565 格式，通过串口发送给基站转发到接收端。
+支持 PNG / JPG / BMP 等常见格式。
+
 用法:
   # 自动读取接收端 MAC + 传图（无图片则基站自生成）
   python3 tools/send.py /dev/cu.usbserial-1140                          # 使用已保存的 MAC
   python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18        # 指定 MAC
   python3 tools/send.py /dev/cu.usbserial-1130 /dev/cu.usbserial-1140   # 自动读取接收端 MAC
 
-  # 发送图片文件
+  # 发送图片文件（自动缩放至 240×240）
   python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.jpg
+  python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 ~/Pictures/test.png
 """
 
 import sys
