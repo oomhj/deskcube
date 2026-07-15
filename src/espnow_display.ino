@@ -61,8 +61,30 @@ static bool qPop(int *stripIdx, const uint8_t **data) {
 // JPEG 解码
 // =====================================================================
 #include <TJpg_Decoder.h>
+
+// 8×8 块 Sprite：每解出一个块立即推送到 LCD
+static TFT_eSprite jpgBlock(&tft);
+
 static bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-    tft.pushImage(x, y, w, h, bitmap);
+    // TJpg_Decoder 可能输出 16×16 或 8×8 tile，拆成 8×8 子块
+    for (int by = 0; by < h; by += 8) {
+        for (int bx = 0; bx < w; bx += 8) {
+            int absX = x + bx;
+            int absY = y + by;
+
+            // 逐个像素写入 8×8 Sprite
+            for (int py = 0; py < 8 && (by + py) < h; py++) {
+                for (int px = 0; px < 8 && (bx + px) < w; px++) {
+                    int srcOff = ((by + py) * w + (bx + px)) * 2;
+                    uint16_t c = ((uint8_t *)bitmap)[srcOff] |
+                                 (((uint8_t *)bitmap)[srcOff + 1] << 8);
+                    jpgBlock.drawPixel(px, py, c);
+                }
+            }
+            // 立即推送到 LCD 对应位置
+            jpgBlock.pushSprite(absX, absY);
+        }
+    }
     return true;
 }
 
@@ -114,6 +136,7 @@ void setup() {
   }
 
   espnowSenderInit(peerMac, &tft);
+  jpgBlock.createSprite(8, 8);
   TJpgDec.setCallback(tftOutput);
 
   Serial.println("[Base] Queue+JPEG forward mode (Q_SIZE=4, RX_BUF=4096)");
