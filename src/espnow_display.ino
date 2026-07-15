@@ -56,12 +56,14 @@ void setup()
       val = 0;
     }
   }
+  // 保存最后一个字节（换行前累积的）
+  peerMac[idx++] = val;
+
   if (idx < 6) {
     // 输入不完整或超时，使用默认广播地址
     Serial.println("\nInvalid MAC, using broadcast");
     memset(peerMac, 0xFF, 6);
   } else {
-    peerMac[idx] = val;
     Serial.print("\nUsing MAC: ");
     Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n",
                   peerMac[0], peerMac[1], peerMac[2],
