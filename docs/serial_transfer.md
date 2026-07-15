@@ -57,22 +57,22 @@
   ├─ CMD_IMG_START ──────────────────> │ 准备接收
   │                                    ├─ ESP-NOW: PKT_IMAGE_START
   │                                    │
-  ├─ CMD_STRIP_DATA (strip=0) ───────> │ LCD 显示行0 + ESP-NOW 发30块
-  │ <───────────────────────────── ACK │
-  ├─ CMD_STRIP_DATA (strip=1) ───────> │ LCD 显示行1 + ESP-NOW 发30块
-  │ <───────────────────────────── ACK │
-  │  ...                               │
-  ├─ CMD_STRIP_DATA (strip=29) ──────> │ LCD 显示行29 + ESP-NOW 发30块
-  │ <───────────────────────────── ACK │
-  │                                    │
-  ├─ CMD_IMG_END ────────────────────> │ 传输完成
-  │                                    ├─ ESP-NOW: PKT_IMAGE_END
+  ├─ CMD_STRIP_DATA (strip=0) ───────> │ LCD 显示 → 入队 → ACK ╮
+  │ <───────────────────────────── ACK │                        │
+  ├─ CMD_STRIP_DATA (strip=1) ───────> │ LCD 显示 → 入队 → ACK │
+  │ <───────────────────────────── ACK │              ┌─────────┤
+  │  ...                               │   环形队列   │ ESP-NOW │
+  ├─ CMD_STRIP_DATA (strip=29) ──────> │ LCD 显示 → 入 → 出队   │
+  │ <───────────────────────────── ACK │   (Q=8)     └─────────┤
+  │                                    │                        │
+  ├─ CMD_IMG_END ────────────────────> │ 等队列排空 → ESP-NOW: END
 ```
 
-> **注意：** 串口协议不设 CRC 之外的流控握手（如 XON/XOFF 或 RTS/CTS）。
-> 行级 ACK 提供明确的背压（back-pressure）：基站未处理完前一个 strip
-> 不会回复 ACK，宿主机不会发送下一个 strip。这避免了 RX 缓冲区（512 字节）
-> 在 115200 baud 以上波特率溢出的可能。
+> **架构说明：** 基站内部有一个 8 条目的环形队列。
+> 串口收到 strip 后立即 LCD 显示、入队、回复 ACK（不等待 ESP-NOW）。
+> ESP-NOW 从队列异步出队发送。队列满时不回 ACK（背压），
+> 宿主机等待，串口数据自然停止，避免 RX 溢出。
+> 串口 RX 硬件缓冲区已增大至 4096 字节，可容纳一整条 strip 数据。
 
 ---
 
@@ -146,7 +146,7 @@ python3 tools/send.py /dev/cu.usbserial-1140 8C:4F:00:53:A3:18 photo.jpg
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `STRIP_ACK_TIMEOUT` | `5.0` | 等待基站 ACK 超时（秒） |
+| `STRIP_ACK_TIMEOUT` | `30.0` | 等待基站 ACK 超时（秒） |
 
 核心函数：
 
