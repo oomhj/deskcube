@@ -133,7 +133,6 @@ void setup()
           break;
         }
         stripIdx = Serial.read();
-        int dataLen = len - 1;
 
         int readBytes = 0;
         while (readBytes < STRIP_BUFFER_BYTES) {
