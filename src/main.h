@@ -126,4 +126,13 @@ String num2str(int digits);
 void sendNTPpacket(IPAddress &address);
 void lcdBlockTest();
 
+// ESP-NOW 图片传输
+void espnowSenderInit(const uint8_t *peerMac, uint8_t channel);
+void sendImage(uint16_t pixels[IMG_HEIGHT][IMG_WIDTH], uint16_t imageId, int waitMs);
+
+void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel);
+bool isReceiving();
+bool isTransferComplete();
+int  getReceiveProgress();
+
 #endif
