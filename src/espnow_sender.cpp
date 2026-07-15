@@ -65,10 +65,11 @@ static bool sendPacket(uint8_t *data, int len) {
     return sendSuccess;
 }
 
-/**
- * 生成一条 8×240 行的渐变像素
- * colorFn(y, x) 返回 RGB565 颜色
- */
+// =====================================================================
+// 自测模式：生成渐变彩条并发送（仅启用 ESPNOW_SELF_TEST 时编译）
+// =====================================================================
+#ifdef ESPNOW_SELF_TEST
+
 static void fillStrip(uint16_t imageId, int stripIdx) {
     int baseY = stripIdx * STRIP_H;
     for (int py = 0; py < STRIP_H; py++) {
@@ -170,6 +171,8 @@ void sendImage(uint16_t imageId, int waitMs) {
     }
 }
 
+#endif // ESPNOW_SELF_TEST
+
 // =====================================================================
 // 宿主机模式（串口接收像素数据后转发）
 // =====================================================================
@@ -183,14 +186,14 @@ bool sendStartPacket(uint16_t imageId) {
     return sendPacket((uint8_t *)&startPkt, sizeof(startPkt));
 }
 
-void sendEndPacket(uint16_t imageId, int sent) {
+bool sendEndPacket(uint16_t imageId, int sent) {
     EspnowCtrlPacket endPkt;
     memset(&endPkt, 0, sizeof(endPkt));
     endPkt.header.type    = PKT_IMAGE_END;
     endPkt.header.imageId = imageId;
     endPkt.header.total   = TOTAL_PACKETS;
     endPkt.param          = sent;
-    sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
+    return sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
 }
 
 int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels) {

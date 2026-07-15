@@ -1,65 +1,44 @@
-# ESP-NOW 图片传输 — 可靠性优化设计方案
+# ESP-NOW 图片传输 — 可靠性设计（已实现）
 
-## 现状分析
+## 概述
 
-当前协议已实现的基础功能：
-- ✅ 8×8 分块传输（每包 138 字节，含 128 像素数据 + 10 字节头）
-- ✅ 发送端逐行生成 + LCD 显示 + ESP-NOW 发送
-- ✅ 接收端逐块接收 + 即时 LCD 刷新
-- ✅ 连续刷帧（帧间无停顿）
-
-存在的问题：
-- ❌ 使用广播 MAC → 底层无硬件 ACK，`onDataSent` 回调的 `sendSuccess` **不可靠**
-- ❌ 接收端无去重机制 → 重传导致重复块覆盖
-- ❌ 接收端 MAC 地址硬编码发现流程不完善
+本文档记录已实现的可靠性机制。所有设计均已在 V101 代码中落地。
 
 ---
 
-## 一、MAC 地址发现与配置
+## 一、MAC 地址配置
 
-### 方案：手动配置 + 串口提示
+**当前实现**：基站上电后通过串口交互输入接收端 MAC，或通过 `send.py` 自动配置。
 
-接收端上电后在串口打印自身 MAC。用户将其填入发送端代码。
-
-```
+```text
 接收端串口输出:
 [Receiver] ESP-NOW ready (instant block push)
-  MAC: 5C:CF:7F:XX:XX:XX        ← 复制这个地址
+  MAC: 8C:4F:00:53:A3:18        ← 复制这个地址
+
+基站串口提示:
+Enter receiver MAC (format: XX:XX:XX:XX:XX:XX):
+> 8C:4F:00:53:A3:18
+Using MAC: 8C:4F:00:53:A3:18
 ```
 
-发送端宏定义：
-```cpp
-// 接收端 MAC 地址（从接收端串口获取后填入）
-#define RECEIVER_MAC {0x5C, 0xCF, 0x7F, 0xXX, 0xXX, 0xXX}
-```
-
-### 变更文件
-| 文件 | 变更 |
-|------|------|
-| `src/espnow_display.ino` | 替换 `peerMac[]` 的广播地址为 `RECEIVER_MAC` |
-| `include/espnow_img_proto.h` 或 `src/main.h` | 添加 MAC 宏定义 |
+**自动化流程**（`tools/send.py`）：
+1. 复位接收端 → 读取串口输出的 MAC
+2. 写入 `tools/receiver_mac.txt` 持久化
+3. 通过串口下发 MAC 到基站
 
 ---
 
 ## 二、单播发送 + 硬件 ACK
 
-### 原理
-
-广播包：`esp_now_send(NULL, data, len)` → ESP-NOW **不等待 ACK**，`onDataSent` 回调中的 `status` 始终为 `ESP_NOW_SEND_SUCCESS`。
-
-单播包：`esp_now_send(peerMac, data, len)` → ESP-NOW 等待接收方硬件 ACK，`onDataSent` 返回真实状态。
-
-### 变更：发送端
-
-`sendPacket()` 使用实际 MAC：
+**核心函数**：`sendPacket()` in `espnow_sender.cpp`
 
 ```cpp
 static bool sendPacket(uint8_t *data, int len) {
     sendDone = false;
-    esp_now_send(peerMac, data, len);    // 改为单播
+    esp_now_send(peerAddr, data, len);    // 单播，等待硬件 ACK
     unsigned long start = millis();
     while (!sendDone) {
-        if (millis() - start > 200) {   // 超时增加到 200ms
+        if (millis() - start > 200) {     // 超时保护 200ms
             sendSuccess = false;
             break;
         }
@@ -69,149 +48,94 @@ static bool sendPacket(uint8_t *data, int len) {
 }
 ```
 
-重传参数调整：
+**原理**：
+- 广播发送（`esp_now_send(NULL, ...)`）：`onDataSent` 始终返回成功，不可靠
+- 单播发送（`esp_now_send(peerMac, ...)`）：等待接收端 802.11 ACK，`onDataSent` 返回真实状态
 
-```cpp
-// 当前（广播）
-for (int r = 0; r < 3; r++) {
-    if (sendPacket(...)) break;
-    delay(2);
-}
+**重试策略**：
 
-// 改为（单播 + 合理重试间隔）
-static const int MAX_RETRIES = 5;
-static const int RETRY_DELAY_MS = 8;
-
-for (int r = 0; r < MAX_RETRIES; r++) {
-    if (sendPacket(...)) break;
-    retries++;
-    delay(RETRY_DELAY_MS);
-}
-```
-
-### 变更文件
-| 文件 | 变更 |
-|------|------|
-| `src/espnow_sender.cpp` | `sendPacket()` 目标改为 `peerMac`；`sendImage()` 内重试参数调整 |
+| 参数 | 当前值 |
+|------|--------|
+| 最大重试次数 | 5 次 |
+| 重试间隔 | 8ms |
+| 单次超时 | 200ms |
+| 每包最坏耗时 | 1 秒（5 次 × 200ms） |
 
 ---
 
 ## 三、包序列号与接收端去重
 
-### 当前状态
+### 序列号
 
-协议头中已有 `seq` 字段：
 ```cpp
-typedef struct {
-    uint8_t  type;       // 包类型
-    uint16_t imageId;    // 图片 ID
-    uint16_t seq;        // 自增序列号
-    uint16_t total;      // 总包数
-    uint8_t  stripIdx;   // 行索引
-    uint8_t  blockIdx;   // 块索引
-    uint8_t  w, h;       // 块宽高
-} EspnowPacketHeader;
+// espnow_img_proto.h
+struct EspnowPacketHeader {
+    uint8_t  type;          // PacketType
+    uint16_t imageId;       // 图片 ID
+    uint16_t seq;           // 包序号 (0~899)
+    uint16_t total;         // 总包数 (900)
+    uint8_t  stripIdx;      // 行索引 (0~29), y = stripIdx * 8
+    uint8_t  blockIdx;      // 块在行内的序号 (0~29), x = blockIdx * 8
+    uint8_t  w;             // = BLOCK_W = 8
+    uint8_t  h;             // = BLOCK_H = 8
+};
 ```
 
-`seq = stripIdx * BLOCKS_PER_STRIP + blockIdx` 天然唯一有序。
+`seq = stripIdx * BLOCKS_PER_STRIP + blockIdx`，天然唯一有序。
 
-### 接收端去重逻辑
-
-每帧开始（PKT_IMAGE_START）重置去重表：
+### 接收端去重
 
 ```cpp
-// 新增：去重状态
+// espnow_receiver.cpp
 static uint16_t lastSeq[TOTAL_STRIPS];  // 每行最后收到的 blockIdx
-static uint16_t currentImageId = 0;
 
-// PKT_IMAGE_START 处理中
-memset(lastSeq, 0xFF, sizeof(lastSeq));  // 初始化为 0xFFFF（无包状态）
-currentImageId = hdr->imageId;
+// PKT_IMAGE_START 时重置
+memset(lastSeq, 0xFF, sizeof(lastSeq));
 
 // PKT_IMAGE_DATA 处理中
-uint8_t si = pkt->header.stripIdx;
-uint8_t bi = pkt->header.blockIdx;
-
-if (bi <= lastSeq[si]) {
-    // 重复包，丢弃
-    return;
-}
+if (bi <= lastSeq[si]) return;  // 重复/乱序包，丢弃
 lastSeq[si] = bi;
-
-// 继续正常绘制...
 ```
 
-### 跨帧处理
-
-帧结束时（PKT_IMAGE_END）不去重置，由下一帧的 PKT_IMAGE_START 负责。
-
-如果出现丢帧（START 丢失），接收端自动初始化分支中也要重置去重表：
-
-```cpp
-// DATA 自动初始化（START 丢失时）
-if (!rxState.receiving) {
-    memset(lastSeq, 0xFF, sizeof(lastSeq));
-    currentImageId = hdr->imageId;
-    // ...
-}
-```
-
-### 变更文件
-| 文件 | 变更 |
-|------|------|
-| `include/espnow_img_proto.h` | 无需变更（`seq` 已存在） |
-| `src/espnow_receiver.cpp` | 新增 `lastSeq[]` 数组及去重逻辑 |
+**跨帧防护**：除去重外，还检查 `pkt->header.imageId == rxState.imageId`，防止前一张图的延迟包污染新帧。
 
 ---
 
-## 四、射频参数确认
+## 四、射频参数
 
-### 当前状态
-```cpp
-// 发送端 espnowSenderInit() 中
-WiFi.mode(WIFI_STA);            // ✓ 正确
-wifi_set_channel(channel);      // ✓ 已锁定
-
-// 接收端 espnowReceiverInit() 中
-WiFi.mode(WIFI_STA);            // ✓ 正确
-wifi_set_channel(channel);      // ✓ 已锁定
-```
-
-### 无需变更
-信道锁定和 Wi-Fi 模式已经符合要求。
+| 参数 | 当前值 | 说明 |
+|------|--------|------|
+| Wi-Fi 模式 | `WIFI_STA` | 站点模式，射频开销最小 |
+| 信道 | 1（默认，可配置） | 双方 `wifi_set_channel(channel)` 锁定 |
+| ESP-NOW 角色 | Controller / Slave | 发送端为 CONTROLLER，接收端为 SLAVE |
 
 ---
 
-## 五、预期效果对比
+## 五、当前可靠性效果
 
-| 指标 | 当前（广播） | 优化后（单播+ARQ） |
-|------|-------------|-------------------|
-| ACK 真实性 | ❌ 始终返回成功 | ✅ 真实硬件 ACK |
-| 丢包恢复 | ❌ 盲目重试 3 次 | ✅ 基于 ACK 的可靠重试 |
-| 重复包处理 | ❌ 可能多次写入 | ✅ 序列号去重 |
-| 重试次数 | 3 | 5 |
-| 重试间隔 | 2ms | 8ms |
-| 预期画面完整性 | 可能有残留黑块 | 基本无残留 |
+| 指标 | 当前状态 |
+|------|----------|
+| ACK 真实性 | ✅ 真实硬件 ACK |
+| 丢包恢复 | ✅ 基于 ACK 的 5 次重试 |
+| 重复包处理 | ✅ 序列号单调递增去重 |
+| 跨帧污染 | ✅ imageId 匹配校验 |
+| 重试间隔 | 8ms |
+| 预期画面完整性 | 基本完整，偶有单个块丢失 |
 
 ---
 
-## 六、实现步骤
+## 六、流程总结
 
 ```
-Step 1: 获取接收端 MAC
-  → 烧录接收端 → 读串口输出的 MAC
-  → 填入发送端 #define RECEIVER_MAC
-
-Step 2: 发送端改为单播
-  → sendPacket() 目标改为 peerMac
-  → 调整重试参数（5次, 8ms间隔）
-
-Step 3: 接收端去重
-  → 新增 lastSeq[] 数组
-  → DATA 处理中判断重复
-  → START/AUTO-INIT 时重置
-
-Step 4: 验证
-  → 烧录两端 → 观察画面完整性
-  → 对比 serial 输出的丢包率
+发送端（基站）                        接收端
+  │                                      │
+  ├─ PKT_IMAGE_START ────────────────>   │ 重置去重表，记录 imageId
+  │  单播 + 硬件 ACK                    │
+  │                                      │
+  ├─ PKT_IMAGE_DATA[seq=n] ──────────>   │ 校验 imageId + 去重 → 绘制
+  │←──────── 802.11 ACK ──────────────   │
+  │  若 ACK 超时，重试最多 5 次          │
+  │                                      │
+  ├─ PKT_IMAGE_END ──────────────────>   │ 校验 imageId → 统计输出
+  │  单播 + 硬件 ACK                    │
 ```

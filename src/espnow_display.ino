@@ -52,12 +52,16 @@ void setup()
     else if (c >= 'a' && c <= 'f')  val = val * 16 + (c - 'a' + 10);
     else if (c >= 'A' && c <= 'F')  val = val * 16 + (c - 'A' + 10);
     else if (c == ':' || c == '-') {
-      peerMac[idx++] = val;
+      if (idx < 6) {
+        peerMac[idx++] = val;
+      }
       val = 0;
     }
   }
   // 保存最后一个字节（换行前累积的）
-  peerMac[idx++] = val;
+  if (idx < 6) {
+    peerMac[idx++] = val;
+  }
 
   if (idx < 6) {
     // 输入不完整或超时，使用默认广播地址
@@ -72,7 +76,7 @@ void setup()
 
   espnowSenderInit(peerMac, &tft);
 
-  Serial.println("[Base] Ready. Send image data via serial or press Enter for self-test.");
+  Serial.println("[Base] Ready. Send image data via serial.");
 
   // 行缓冲区（全局避免栈溢出）
   static uint8_t stripBuf[STRIP_BUFFER_BYTES];
@@ -85,12 +89,7 @@ void setup()
 
   while (1) {
     if (Serial.available() < 3) {
-      // 无串口命令时自生成测试图
-      if (!inImage) {
-        sendImage(imgId++, 0);
-      } else {
-        delay(1);
-      }
+      delay(1);
       continue;
     }
 
@@ -138,8 +137,10 @@ void setup()
 
       case CMD_IMG_END: {
         if (!inImage) break;
-        sendEndPacket(imgId, totalSent);
-        Serial.printf("=== Image #%u END, total sent: %d ===\n\n", imgId, totalSent);
+        bool endOk = sendEndPacket(imgId, totalSent);
+        Serial.printf("=== Image #%u END, total sent: %d ===\n", imgId, totalSent);
+        if (!endOk) Serial.println("  WARNING: END packet send failed!");
+        Serial.println();
         inImage = false;
         imgId++;
         break;

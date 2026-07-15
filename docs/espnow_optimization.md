@@ -1,156 +1,81 @@
-# ESP-NOW 图片传输协议优化方案
+# ESP-NOW 图片传输协议 — 现状与优化方向
 
-## 1. 核心传输逻辑：ARQ 带重传确认机制
+## 当前实现状态（V101）
 
-### 现状问题
-当前使用广播 MAC (`0xFF:FF:FF:FF:FF:FF`) 发送，广播包底层**无硬件 ACK 机制**，发送方无法确认接收方是否收到。
+以下优化已在代码中实现：
 
-### 优化目标
-改为**单播模式**（指定接收方 MAC 地址），利用 ESP-NOW 硬件自动返回的 ACK 状态判断发送成败，实现可靠的 ARQ (Automatic Repeat reQuest)。
+| 特性 | 状态 | 代码位置 |
+|------|------|----------|
+| 单播发送 + 硬件 ACK | ✅ 已实现 | `espnow_sender.cpp` — `sendPacket()` 使用 `peerAddr` 单播 |
+| ARQ 重传（5 次 × 8ms） | ✅ 已实现 | `espnow_sender.cpp` — `sendImage()` / `sendStripFromHost()` |
+| 包序列号（seq） | ✅ 已实现 | `espnow_img_proto.h` — `EspnowPacketHeader.seq` |
+| 接收端去重 | ✅ 已实现 | `espnow_receiver.cpp` — `lastSeq[]` + `bi <= lastSeq[si]` |
+| 跨帧 imageId 校验 | ✅ 已实现 | `espnow_receiver.cpp` — DATA/END 均检查 `imageId` |
+| 信道锁定 | ✅ 已实现 | `espnow_sender.cpp` / `espnow_receiver.cpp` — `wifi_set_channel()` |
+| WIFI_STA 模式 | ✅ 已实现 | 双方均使用 `WiFi.mode(WIFI_STA)` |
 
-### 实现方案
+### 当前传输参数
 
-#### 发送端 (Tx)
-```
-调用 esp_now_send(dstMac, data, len) 发送数据
-  ↓
-系统触发 SentCb 回调，返回状态：
-  - ESP_NOW_SEND_SUCCESS → 发送成功
-  - ESP_NOW_SEND_FAIL    → 发送失败
-```
-
-#### 重传策略
-| 参数 | 建议值 | 说明 |
-|------|--------|------|
-| 最大重试次数 \(N_{retry}\) | 3 ~ 5 次 | 超过后丢弃该包，继续下一包 |
-| 重试间隔 \(T_{wait}\) | 5 ~ 10 ms | 避免信道拥堵 |
-
-#### 代码框架
-```cpp
-static void onDataSent(uint8_t *mac_addr, uint8_t status) {
-    sendDone = true;
-    sendSuccess = (status == 0);  // 0 = ESP_NOW_SEND_SUCCESS
-}
-
-bool sendPacketReliable(uint8_t *dstMac, uint8_t *data, int len, int maxRetries) {
-    for (int r = 0; r < maxRetries; r++) {
-        sendDone = false;
-        esp_now_send(dstMac, data, len);
-        
-        unsigned long start = millis();
-        while (!sendDone) {
-            if (millis() - start > 100) break;  // 超时保护
-            yield();
-        }
-        
-        if (sendSuccess) return true;
-        delay(5);  // 重试间隔
-    }
-    return false;  // 全部重试失败
-}
-```
+| 参数 | 值 |
+|------|------|
+| 发送方式 | 单播（指定接收端 MAC） |
+| 重试次数 | 最多 5 次 |
+| 重试间隔 | 8ms |
+| 单包超时 | 200ms |
+| 接收端去重 | 按 strip 内 blockIdx 单调递增判断 |
+| 跨帧防护 | imageId 匹配校验 |
 
 ---
 
-## 2. 核心防错逻辑：包序列号与去重
+## 后续优化方向
 
-### 问题
-重传机制导致接收端可能收到**重复数据包**。
+### 1. 动态调整块大小
 
-### 方案
-在数据包头中加入**自增序列号 (seq)**，接收端维护历史记录，重复包直接丢弃。
+当前 8×8=128 字节数据，ESP-NOW 最大 250 字节。可尝试 8×15=240 字节减少包数：
 
-#### 序列号设计
-```cpp
-typedef struct {
-    uint8_t  type;       // 包类型
-    uint16_t imageId;    // 图片 ID
-    uint16_t seq;        // 自增序列号（0 ~ TOTAL_PACKETS-1）
-    uint16_t total;      // 总包数
-    uint8_t  stripIdx;   // 行索引
-    uint8_t  blockIdx;   // 块索引
-    uint8_t  w, h;       // 块宽高
-} EspnowPacketHeader;
-```
+| 块大小 | 每包数据 | 总包数 | 头开销占比 |
+|--------|---------|--------|-----------|
+| 8×8 (当前) | 128 B | 900 | 7.2% |
+| 8×15 | 240 B | 480 | 4.0% |
+| 16×16 | 512 B (超限) | — | — |
 
-`seq = stripIdx * BLOCKS_PER_STRIP + blockIdx`，天然唯一且有序。
+> 注意：8×15 的块在 240 像素宽下需要 16 列/行，总包数 16×30=480。
 
-#### 接收端去重
-```cpp
-static uint16_t lastSeenSeq[TOTAL_STRIPS];  // 每行记录最后收到的块号
+### 2. 管道化传输（滑动窗口）
 
-bool isDuplicate(uint8_t stripIdx, uint8_t blockIdx) {
-    if (blockIdx <= lastSeenSeq[stripIdx]) {
-        return true;  // 重复包，丢弃
-    }
-    lastSeenSeq[stripIdx] = blockIdx;
-    return false;
-}
-```
-
-> 注意：跨图片时需重置 `lastSeenSeq[]`（在 PKT_IMAGE_START 处理中清零）。
-
----
-
-## 3. 硬件与射频参数
-
-### 信道锁定
-通信双方必须工作在**完全相同的 Wi-Fi 信道上**。
-
-| 问题 | 后果 | 解决 |
-|------|------|------|
-| 双方信道不一致 | ESP-NOW 时断时续 | 发送端/接收端统一调用 `wifi_set_channel(channel)` |
-| 自动信道切换 | 连接不稳定 | 手动固定信道，如 channel = 1 |
-
-### Wi-Fi 模式
-```
-正确：WiFi.mode(WIFI_STA);           // 站点模式（推荐）
-      WiFi.mode(WIFI_AP_STA);        // 双模
-
-错误：WiFi.mode(WIFI_AP);            // 纯 AP 模式 → 射频忙于处理连接请求，丢包严重
-```
-
-### 当前实现检查
-```cpp
-// 发送端
-WiFi.mode(WIFI_STA);
-wifi_set_channel(channel);           // ✓ 已锁定信道
-
-// 接收端
-WiFi.mode(WIFI_STA);
-wifi_set_channel(channel);           // ✓ 已锁定信道
-```
-
----
-
-## 4. 综合数据流
+当前是同步发送：发一个包 → 等 ACK → 发下一个。
 
 ```
-发送端                             接收端
-  │                                  │
-  ├─ PKT_IMAGE_START ──────────────> │ 重置去重表、初始化状态
-  │   (seq=0, 无重传)                │
-  │                                  │
-  ├─ PKT_IMAGE_DATA[seq=1] ────────> │ 检查 seq > lastSeen → 接受并绘制
-  │←────── ACK (硬件自动) ────────── │
-  │                                  │
-  ├─ PKT_IMAGE_DATA[seq=2] ────┐     │
-  │   (发送失败，无 ACK)        │     │
-  │                             │     │
-  ├─ PKT_IMAGE_DATA[seq=2] ────┘───> │ 重传包，检查 seq = lastSeen+1 → 接受
-  │←────── ACK ───────────────────── │
-  │                                  │
-  │   ...                            │
-  │                                  │
-  ├─ PKT_IMAGE_END ────────────────> │ 统计、完成
-  │   (seq=901, 无重传)              │
+当前：  [T]──[W]──[T]──[W]──[T]──[W] ...
+优化：  [T]─[T]─[T]─[W]─[W]─[W] ...  (窗口=3)
 ```
 
----
+T = 发送，W = 等待 ACK
 
-## 5. 后续优化方向
+ESP-NOW 内部有发送队列，可背靠背发送多个包后统一回收 ACK。需注意 ESP8266 的 `esp_now_send()` 是异步的。
 
-1. **动态调整块大小**：当前 8×8=128 字节数据，ESP-NOW 最大 250 字节，可尝试 8×15=240 字节提升吞吐
-2. **管道化传输**：不等前一个包 ACK 再发下一个，允许窗口内连续发送
-3. **NACK 反馈**：接收端发送 NACK 包告知发送端缺失的序列号，发送端针对性补发
-4. **自适应重试间隔**：根据当前丢包率动态调整 \(T_{wait}\)
+### 3. NACK 反馈
+
+接收端维护已收到的 block bitmap（30×30=900 bit ≈ 113 字节），帧结束时通过串口或 ESP-NOW 回传 NACK 列表，发送端针对性补发丢失块。
+
+### 4. 自适应重试间隔
+
+根据当前丢包率动态调整 `T_wait`：
+
+```
+丢包率 < 5%  → 重试间隔 4ms
+丢包率 5~20% → 重试间隔 8ms
+丢包率 > 20% → 重试间隔 12ms
+```
+
+### 5. 串口波特率提升
+
+当前 115200 baud 是最大瓶颈。ESP8266 硬件支持最高 921600 baud：
+
+| 波特率 | 每行传输时间 | 整图时间 |
+|--------|-------------|---------|
+| 115200 | ~333 ms | ~10 s |
+| 460800 | ~83 ms | ~2.5 s |
+| 921600 | ~42 ms | ~1.5 s |
+
+> 需在 `platformio.ini` 和 `send.py` 中同步修改波特率。

@@ -1,4 +1,5 @@
-# ESP-NOW 投屏系统
+# ESP-NOW 投屏系统  
+**版本 V101**
 
 通过双 ESP8266（NodeMCU）实现实时无线投屏：宿主机通过串口发送图片到基站，基站通过 ESP-NOW 转发给接收端，两端 LCD 同步显示。
 
@@ -75,8 +76,8 @@ python3 tools/send.py /dev/cu.usbserial-1140 photo.jpg
 | 分块 | 30 行 × 30 列 = 900 个 8×8 块 |
 | 每包 | 138 字节（128 像素 + 10 字节头） |
 | 传输 | 单播 + 硬件 ACK |
-| 重传 | 5 次 × 8ms |
-| 去重 | 接收端 blockIdx 去重 |
+| 重传 | 5 次 × 8ms（硬件 ACK 驱动） |
+| 去重 | 接收端 blockIdx 单调递增 + imageId 跨帧校验 |
 
 详见 [`docs/screen_projection.md`](docs/screen_projection.md)。
 
@@ -115,3 +116,12 @@ python3 tools/send.py /dev/cu.usbserial-1140 photo.jpg
 | [`docs/screen_projection.md`](docs/screen_projection.md) | ESP-NOW 传输、接收端渲染、传输统计 |
 | [`docs/espnow_optimization.md`](docs/espnow_optimization.md) | 性能瓶颈分析、优化方案 |
 | [`docs/espnow_reliability_design.md`](docs/espnow_reliability_design.md) | ARQ 重传、去重、时序设计 |
+
+---
+
+## 版本历史
+
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| V101 | 2026-07-16 | 单播+硬件ACK；接收端去重+imageId跨帧校验；串口缓冲增大至512B；死代码条件编译隔离；文档与代码同步 |
+| V100 | — | 初始版本：广播传输，基本投屏功能 |

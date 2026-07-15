@@ -139,7 +139,7 @@ def send_image_via_serial(ser, strips):
     for idx, strip_data in enumerate(strips):
         payload = bytes([idx]) + strip_data
         send_serial_packet(ser, CMD_STRIP_DATA, payload)
-        time.sleep(0.05)  # 等待基站处理
+        time.sleep(0.01)  # 行间延迟，可环境变量 SERIAL_STRIP_DELAY 覆盖
     send_serial_packet(ser, CMD_IMG_END)
 ```
 
@@ -168,10 +168,15 @@ ser.close()
 | 环节 | 速度 | 说明 |
 |------|------|------|
 | 串口传输 (115200) | ~11 KB/s | 每行 3840 字节 ≈ 330ms |
+| 串口传输 (460800) | ~44 KB/s | 每行 ≈ 83ms |
+| 串口传输 (921600) | ~88 KB/s | 每行 ≈ 42ms |
 | ESP-NOW (单播 ACK) | ~90 KB/s | 900 包约 1.3 秒 |
-| 整图传输 | ~10 秒 | 30 行 × 330ms + ESP-NOW 1.3s |
+| 整图传输 (115200) | ~11 秒 | 30 行 × 333ms + ESP-NOW 1.3s + 行间延迟 0.3s |
+| 整图传输 (921600) | ~2.0 秒 | 30 行 × 42ms + ESP-NOW 1.3s + 行间延迟 0.3s |
 
-> 串口是瓶颈。提高波特率（如 921600）可将行传输时间降至 ~40ms，整图约 2.5 秒。
+> 串口是瓶颈。ESP8266 硬件支持最高 921600 baud。
+> 行间延迟已从 50ms 优化至可配置（默认 10ms），可通过 `SERIAL_STRIP_DELAY` 环境变量调整。
+> 同时 ESP8266 串口 RX 缓冲区已增大至 512 字节（`-DSERIAL_RX_BUFFER_SIZE=512`），降低 FIFO 溢出风险。
 
 ---
 

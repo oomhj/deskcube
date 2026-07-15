@@ -133,7 +133,8 @@ def send_image_via_serial(ser, strips, verbose=True):
         send_serial_packet(ser, CMD_STRIP_DATA, payload)
         if verbose and (idx % 5 == 0 or idx == len(strips) - 1):
             print(f'  Strip {idx}/{len(strips)-1}')
-        time.sleep(0.05)  # 等待基站处理
+        # 等待基站处理（可环境变量 SERIAL_STRIP_DELAY 覆盖，单位秒）
+        time.sleep(float(os.environ.get('SERIAL_STRIP_DELAY', '0.01')))
 
     send_serial_packet(ser, CMD_IMG_END)
     if verbose:

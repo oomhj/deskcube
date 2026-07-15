@@ -108,11 +108,15 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
             if (!rxState.receiving) return;
 
             EspnowImagePacket *pkt = (EspnowImagePacket *)data;
+
+            // 跨帧防护：丢弃不属于当前帧的延迟包
+            if (pkt->header.imageId != rxState.imageId) return;
+
             uint8_t si = pkt->header.stripIdx;
             uint8_t bi = pkt->header.blockIdx;
 
-            // 去重：同一 blockIdx 重复到达则丢弃（重传导致）
-            if (bi == lastSeq[si]) return;
+            // 去重：同一 strip 内 blockIdx 必须单调递增，重复/乱序包丢弃
+            if (bi <= lastSeq[si]) return;
             lastSeq[si] = bi;
 
             handleDataPacket(pkt);
@@ -121,6 +125,9 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
 
         case PKT_IMAGE_END: {
             if (!rxState.receiving) return;
+
+            // 跨帧防护：丢弃不属于当前帧的延迟 END 包
+            if (hdr->imageId != rxState.imageId) return;
 
             Serial.println("\n[Receiver] <<< IMAGE END >>>");
             rxState.complete = true;
