@@ -1,8 +1,10 @@
 /**
- * ESP-NOW 图片接收端
+ * ESP-NOW 图片接收端 (8×8块 + 8×240行缓冲区)
  *
- * 通过 ESP-NOW 接收图片数据包，每收到一个 8×8 块，
- * 立即用 Sprite 缓存区推送到 LCD，无需全图缓冲区。
+ * 维护 8×240 行缓冲区 Sprite (3840 字节)
+ * 每收到一个 8×8 块，写入行缓冲区对应位置
+ * 一行 30 块收齐后 pushSprite 到 LCD
+ * 无需全图缓冲区
  */
 
 #include <ESP8266WiFi.h>
@@ -10,37 +12,32 @@
 #include <TFT_eSPI.h>
 #include "espnow_img_proto.h"
 
-// ---------- 接收状态 ----------
 typedef struct {
-    uint16_t imageId;           // 当前接收的图片 ID
-    uint16_t totalExpected;     // 期望总包数
-    uint16_t totalReceived;     // 已接收包数
-    uint16_t lastSeq;           // 最后收到的序号（用于丢包检测）
-    unsigned long startTime;    // 接收开始时间
-    bool receiving;             // 是否正在接收
-    bool complete;              // 是否接收完成
-    uint8_t bitmap[BLOCK_ROWS][BLOCK_COLS];  // 接收位图（跟踪哪些块已收到）
+    uint16_t    imageId;
+    uint16_t    totalExpected;
+    uint16_t    totalReceived;
+    uint16_t    currentStrip;
+    uint8_t     stripBitmap[BLOCKS_PER_STRIP];  // 当前行收块位图
+    unsigned long startTime;
+    bool        receiving;
+    bool        complete;
 } ReceiverState;
 
 static ReceiverState rxState;
 static TFT_eSPI *lcd = NULL;
-static TFT_eSprite *blockSprite = NULL;
+static TFT_eSprite *strip = NULL;   // 8×240 行缓冲区
 
-// ---------- 回调函数声明 ----------
 static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len);
+static void flushStrip(int stripY);
 
-// ---------- 初始化 ----------
 void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel = 1) {
     lcd = tft;
 
-    // 创建 8×8 Sprite 缓存区
-    blockSprite = new TFT_eSprite(lcd);
-    blockSprite->createSprite(BLOCK_SIZE, BLOCK_SIZE);
+    strip = new TFT_eSprite(lcd);
+    strip->createSprite(IMG_WIDTH, STRIP_H);  // 240 × 8
 
-    // 清空接收状态
     memset(&rxState, 0, sizeof(rxState));
 
-    // 初始化 ESP-NOW
     WiFi.mode(WIFI_STA);
     wifi_set_channel(channel);
 
@@ -48,41 +45,58 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel = 1) {
     esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
     esp_now_register_recv_cb(onDataRecv);
 
-    Serial.println("[Receiver] ESP-NOW initialized, waiting for image...");
+    Serial.println("[Receiver] ESP-NOW ready (8x8 blocks, strip buffer)");
+    Serial.printf("  Strip: %dx%d (%d bytes)\n",
+                  IMG_WIDTH, STRIP_H, STRIP_BUFFER_BYTES);
+    Serial.printf("  Total: %d pkts\n", TOTAL_PACKETS);
 }
 
-// ---------- 处理图片数据包 ----------
-static void handleDataPacket(EspnowImagePacket *pkt) {
-    int x = pkt->header.x * BLOCK_SIZE;
-    int y = pkt->header.y * BLOCK_SIZE;
-    int seq = pkt->header.seq;
+static void flushStrip(int stripY) {
+    strip->pushSprite(0, stripY);
+    strip->fillSprite(TFT_BLACK);  // 清空缓冲区
+}
 
-    // 标记该块已接收
-    if (pkt->header.y < BLOCK_ROWS && pkt->header.x < BLOCK_COLS) {
-        rxState.bitmap[pkt->header.y][pkt->header.x] = 1;
+static void handleDataPacket(EspnowImagePacket *pkt) {
+    int stripIdx = pkt->header.stripIdx;
+    int blockIdx = pkt->header.blockIdx;
+
+    // 新的一行 → 推送上一行
+    if (stripIdx != rxState.currentStrip) {
+        if (rxState.currentStrip < TOTAL_STRIPS) {
+            flushStrip(rxState.currentStrip * STRIP_H);
+        }
+        rxState.currentStrip = stripIdx;
+        memset(rxState.stripBitmap, 0, sizeof(rxState.stripBitmap));
     }
 
     rxState.totalReceived++;
-    rxState.lastSeq = seq;
+    rxState.stripBitmap[blockIdx] = 1;
 
-    // 将接收到的像素数据填入 Sprite
+    // 将 8×8 像素写入行缓冲区
+    int destX = blockIdx * BLOCK_H;  // blockIdx × 8
+
     int idx = 0;
-    for (int py = 0; py < BLOCK_SIZE; py++) {
-        for (int px = 0; px < BLOCK_SIZE; px++) {
+    for (int py = 0; py < BLOCK_W; py++) {
+        for (int px = 0; px < BLOCK_H; px++) {
             uint16_t color = pkt->data[idx] | (pkt->data[idx + 1] << 8);
             idx += 2;
-            blockSprite->drawPixel(px, py, color);
+            strip->drawPixel(destX + px, py, color);
         }
     }
 
-    // 推送到 LCD
-    blockSprite->pushSprite(x, y);
-
-    // 可选：画块边框（调试用）
-    // lcd->drawRect(x, y, BLOCK_SIZE, BLOCK_SIZE, TFT_WHITE);
+    // 检查当前行是否收齐
+    bool done = true;
+    for (int i = 0; i < BLOCKS_PER_STRIP; i++) {
+        if (!rxState.stripBitmap[i]) { done = false; break; }
+    }
+    if (done) {
+        flushStrip(stripIdx * STRIP_H);
+        int pct = (stripIdx + 1) * 100 / TOTAL_STRIPS;
+        Serial.printf("[Receiver] Strip %d/%d (%d%%)\n",
+                      stripIdx + 1, TOTAL_STRIPS, pct);
+    }
 }
 
-// ---------- 打印接收统计 ----------
 static void printStats() {
     float elapsed = (millis() - rxState.startTime) / 1000.0;
     int lost = rxState.totalExpected - rxState.totalReceived;
@@ -92,99 +106,67 @@ static void printStats() {
     Serial.printf("Received: %d/%d\n", rxState.totalReceived, rxState.totalExpected);
     Serial.printf("Lost:     %d\n", lost > 0 ? lost : 0);
     Serial.printf("Time:     %.1f s\n", elapsed);
-
     if (elapsed > 0) {
-        float pps = rxState.totalReceived / elapsed;
-        Serial.printf("Speed:    %.0f packets/s\n", pps);
-    }
-
-    // 打印未收到的块
-    if (lost > 0) {
-        Serial.println("Missing blocks:");
-        for (int r = 0; r < BLOCK_ROWS; r++) {
-            for (int c = 0; c < BLOCK_COLS; c++) {
-                if (!rxState.bitmap[r][c]) {
-                    Serial.printf("  [%d,%d] seq=%d\n", c, r, r * BLOCK_COLS + c);
-                }
-            }
-        }
+        float kBps = rxState.totalReceived * BLOCK_DATA_BYTES / elapsed / 1024;
+        Serial.printf("Speed:    %.1f KB/s\n", kBps);
     }
 }
 
-// ---------- 重置接收状态 ----------
-static void resetState() {
-    rxState.receiving = false;
-    rxState.complete = false;
-    rxState.totalReceived = 0;
-    rxState.lastSeq = 0;
-    memset(rxState.bitmap, 0, sizeof(rxState.bitmap));
-}
-
-// ---------- ESP-NOW 接收回调 ----------
 static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
     if (len < sizeof(EspnowPacketHeader)) return;
-
     EspnowPacketHeader *hdr = (EspnowPacketHeader *)data;
 
     switch (hdr->type) {
         case PKT_IMAGE_START: {
-            EspnowCtrlPacket *pkt = (EspnowCtrlPacket *)data;
             Serial.println("\n[Receiver] <<< IMAGE START >>>");
-
-            // 清屏
             lcd->fillScreen(TFT_BLACK);
+            strip->fillSprite(TFT_BLACK);
 
-            // 初始化接收状态
-            rxState.imageId      = pkt->header.imageId;
-            rxState.totalExpected = pkt->header.total;
+            rxState.imageId       = hdr->imageId;
+            rxState.totalExpected = hdr->total;
             rxState.totalReceived = 0;
+            rxState.currentStrip  = 0;
             rxState.receiving     = true;
             rxState.complete      = false;
             rxState.startTime     = millis();
-            memset(rxState.bitmap, 0, sizeof(rxState.bitmap));
-
-            Serial.printf("  Image ID: %u, Total packets: %d\n",
-                          rxState.imageId, rxState.totalExpected);
+            memset(rxState.stripBitmap, 0, sizeof(rxState.stripBitmap));
             break;
         }
 
         case PKT_IMAGE_DATA: {
-            if (!rxState.receiving) {
-                Serial.println("[Receiver] WARN: data packet ignored (not receiving)");
-                return;
-            }
-            EspnowImagePacket *pkt = (EspnowImagePacket *)data;
-            handleDataPacket(pkt);
+            if (!rxState.receiving) return;
+            handleDataPacket((EspnowImagePacket *)data);
             break;
         }
 
         case PKT_IMAGE_END: {
             if (!rxState.receiving) return;
 
-            EspnowCtrlPacket *pkt = (EspnowCtrlPacket *)data;
-            Serial.println("\n[Receiver] <<< IMAGE END >>>");
+            // 推送最后一行
+            if (rxState.currentStrip < TOTAL_STRIPS) {
+                flushStrip(rxState.currentStrip * STRIP_H);
+            }
 
+            Serial.println("\n[Receiver] <<< IMAGE END >>>");
             rxState.complete = true;
             rxState.receiving = false;
-
             printStats();
 
-            // 显示完成信息在 LCD 上（短暂显示）
             lcd->setTextColor(TFT_WHITE, TFT_BLACK);
-            lcd->setTextSize(1);
             lcd->drawString("Transfer Complete!", 4, 2, 2);
-
             break;
         }
 
         default:
-            Serial.printf("[Receiver] Unknown packet type: 0x%02X\n", hdr->type);
+            Serial.printf("[Receiver] Unknown type: 0x%02X\n", hdr->type);
             break;
     }
 }
 
-// ---------- 查询状态 ----------
-bool isReceiving()       { return rxState.receiving; }
-bool isTransferComplete(){ return rxState.complete; }
-int  getReceiveProgress(){ return rxState.totalExpected > 0 ?
-                                  (rxState.totalReceived * 100 / rxState.totalExpected) : 0; }
+bool isReceiving()        { return rxState.receiving; }
+bool isTransferComplete() { return rxState.complete; }
+int  getReceiveProgress() {
+    return rxState.totalExpected > 0
+        ? (rxState.totalReceived * 100 / rxState.totalExpected)
+        : 0;
+}

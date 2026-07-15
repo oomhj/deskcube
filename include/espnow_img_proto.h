@@ -6,74 +6,83 @@
 // =====================================================================
 // ESP-NOW 图片传输协议
 //
-// 图片尺寸: 240 × 240 像素, RGB565 格式
-// 传输单元: 8 × 8 像素块 (128 字节像素数据)
-// 单包大小: 138 字节 (10 字节包头 + 128 字节数据) < 250 字节上限
-// 总包数:   (240/8) × (240/8) = 900 包
-// 接收策略: 收到一块立即写 LCD，无需全图缓冲区
+// 图片尺寸:   240 × 240 像素, RGB565 格式
+// 行缓冲区:   8 × 240 Sprite (3840 字节), 接收端 RAM
+// 传输单元:   8 × 8 像素块 (128 字节/包)
+// 渲染对齐:   每块 8×8 正好对应一次 LCD 写入操作
+//
+// 数据流:
+//   strip0: [block0..block29] → flushStrip(y=0)  →
+//   strip1: [block0..block29] → flushStrip(y=8)  →
+//   ...
+//   strip29: ...              → flushStrip(y=232) →
+//   总计 30 × 30 = 900 包
 // =====================================================================
 
-// ---------- 协议常量 ----------
 #define IMG_WIDTH       240
 #define IMG_HEIGHT      240
 
-#define BLOCK_SIZE      8                     // 像素块边长
-#define BLOCK_COLS      (IMG_WIDTH / BLOCK_SIZE)   // 30
-#define BLOCK_ROWS      (IMG_HEIGHT / BLOCK_SIZE)  // 30
-#define BLOCK_TOTAL     (BLOCK_COLS * BLOCK_ROWS)  // 900
+// --- 行缓冲区 (接收端) ---
+#define STRIP_H         8
+#define STRIP_BUFFER_BYTES (STRIP_H * IMG_WIDTH * 2)  // 3840 字节
 
-// 每个块像素数据字节数: 8 × 8 × 2 (RGB565) = 128
-#define BLOCK_DATA_BYTES  (BLOCK_SIZE * BLOCK_SIZE * 2)
+// --- 传输块 ---
+#define BLOCK_W         8           // 块高 (和 strip 等高)
+#define BLOCK_H         8           // 块宽
+#define BLOCK_PIXELS    (BLOCK_W * BLOCK_H)        // 64
+#define BLOCK_DATA_BYTES (BLOCK_PIXELS * 2)        // 128 字节
 
-// ESP-NOW 单包最大有效数据长度
+#define BLOCKS_PER_STRIP (IMG_WIDTH / BLOCK_H)     // 30
+#define TOTAL_STRIPS     (IMG_HEIGHT / BLOCK_W)    // 30
+#define TOTAL_PACKETS    (BLOCKS_PER_STRIP * TOTAL_STRIPS)  // 900
+
+// --- ESP-NOW ---
 #define ESPNOW_MAX_DATA  250
-
-// 包头大小: imageId(2) + seq(2) + total(2) + x(1) + y(1) + w(1) + h(1) = 10
-#define PACKET_HEADER_SIZE  10
-
-// 每包携带的像素数据 = 250 - 10 = 240，但我们的块数据固定 128
-#define PACKET_DATA_SIZE    BLOCK_DATA_BYTES  // 128
+#define PACKET_HEADER_SIZE 10
 
 // ---------- 包类型 ----------
 enum PacketType : uint8_t {
-    PKT_IMAGE_START = 0x01,   // 图片传输开始
-    PKT_IMAGE_DATA  = 0x02,   // 图片数据块
-    PKT_IMAGE_END   = 0x03,   // 图片传输结束
-    PKT_ACK         = 0x04,   // 接收确认
-    PKT_NACK        = 0x05,   // 重传请求
+    PKT_IMAGE_START = 0x01,
+    PKT_IMAGE_DATA  = 0x02,
+    PKT_IMAGE_END   = 0x03,
+    PKT_ACK         = 0x04,
+    PKT_NACK        = 0x05,
 };
 
-// ---------- 数据包头（所有包共用前 10 字节）----------
-#pragma pack(push, 1)  // 字节对齐，无填充
+// ---------- 数据结构 ----------
+#pragma pack(push, 1)
 
 struct EspnowPacketHeader {
     uint8_t  type;          // PacketType
-    uint16_t imageId;       // 图片 ID，区分不同图片
-    uint16_t seq;           // 包序号 (0 ~ total-1)
-    uint16_t total;         // 总包数
-    uint8_t  x;             // 块 X 坐标 (块单位, 0~29)
-    uint8_t  y;             // 块 Y 坐标 (块单位, 0~29)
-    uint8_t  w;             // 块宽度 (块单位)
-    uint8_t  h;             // 块高度 (块单位)
+    uint16_t imageId;       // 图片 ID
+    uint16_t seq;           // 包序号 (0~899)
+    uint16_t total;         // 总包数 (900)
+    uint8_t  stripIdx;      // 行索引 (0~29), y = stripIdx * 8
+    uint8_t  blockIdx;      // 块在行内的序号 (0~29), x = blockIdx * 8
+    uint8_t  w;             // = BLOCK_W = 8
+    uint8_t  h;             // = BLOCK_H = 8
 };
 
-// ---------- 图片数据包 ----------
-// 包头(10B) + 像素数据(128B) = 138B < 250B ✓
+// 图片数据包: 10B 包头 + 128B 像素 = 138B
 struct EspnowImagePacket {
     EspnowPacketHeader header;
-    uint8_t  data[BLOCK_DATA_BYTES];  // 8×8 RGB565 像素数据
+    uint8_t  data[BLOCK_DATA_BYTES];
 };
 
-// ---------- 控制包（开始/结束/ACK/NACK）----------
+// 控制包
 struct EspnowCtrlPacket {
     EspnowPacketHeader header;
-    uint16_t param;         // 附加参数
+    uint16_t param;
 };
 
 #pragma pack(pop)
 
-// ---------- 校验：确保不超过 ESP-NOW 上限 ----------
+// ---------- 静态校验 ----------
 static_assert(sizeof(EspnowImagePacket) <= ESPNOW_MAX_DATA,
-              "EspnowImagePacket too large!");
+              "Packet exceeds ESP-NOW max!");
+static_assert(BLOCK_DATA_BYTES == 128,
+              "8x8 block = 128 bytes pixel data");
+static_assert(TOTAL_PACKETS == 900,
+              "30 strips x 30 blocks = 900 packets");
 
 #endif // __ESPNOW_IMG_PROTO_H__

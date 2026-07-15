@@ -1,19 +1,14 @@
 /**
- * ESP-NOW 图片发送端示例
+ * ESP-NOW 图片发送端 (8×8 块)
  *
- * 将一张 240×240 RGB565 图片切分为 8×8 块，
- * 通过 ESP-NOW 逐包发送给接收端。
- *
- * 使用方式：
- *   1. 准备图片数据 (uint16_t pixels[240][240])
- *   2. 调用 sendImage(pixels, peerMac) 发送
+ * 将 240×240 RGB565 图片切分为 8×8 块，
+ * 按行发送：每行 30 个块，共 30 行 = 900 包
  */
 
 #include <ESP8266WiFi.h>
 #include <espnow.h>
 #include "espnow_img_proto.h"
 
-// ---------- 回调函数 ----------
 static volatile bool sendDone = false;
 static volatile bool sendSuccess = false;
 
@@ -22,7 +17,6 @@ static void onDataSent(uint8_t *mac_addr, uint8_t status) {
     sendSuccess = (status == 0);
 }
 
-// ---------- 初始化 ESP-NOW ----------
 void espnowSenderInit(const uint8_t *peerMac, uint8_t channel = 1) {
     WiFi.mode(WIFI_STA);
     wifi_set_channel(channel);
@@ -30,124 +24,105 @@ void espnowSenderInit(const uint8_t *peerMac, uint8_t channel = 1) {
     esp_now_init();
     esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
     esp_now_register_send_cb(onDataSent);
-
-    // 添加对端
     esp_now_add_peer((uint8_t *)peerMac, ESP_NOW_ROLE_SLAVE, channel, NULL, 0);
+
+    Serial.println("[Sender] ESP-NOW initialized");
+    Serial.printf("  Block: %dx%d (%d B/pkt), Total: %d pkts\n",
+                  BLOCK_W, BLOCK_H, BLOCK_DATA_BYTES, TOTAL_PACKETS);
 }
 
-// ---------- 发送一包并等待结果 ----------
 static bool sendPacket(uint8_t *data, int len) {
     sendDone = false;
-    esp_now_send(NULL, data, len);  // NULL = 发给所有已添加的 peer
+    esp_now_send(NULL, data, len);
 
-    // 等待发送完成（超时 100ms）
     unsigned long start = millis();
     while (!sendDone) {
-        if (millis() - start > 100) {
-            Serial.println("[Sender] Send timeout!");
-            return false;
-        }
+        if (millis() - start > 100) return false;
         yield();
     }
     return sendSuccess;
 }
 
-// ---------- 发送完整图片 ----------
 void sendImage(uint16_t pixels[IMG_HEIGHT][IMG_WIDTH],
                uint16_t imageId = 1,
-               int waitMs = 5)   // 包间延时
+               int waitMs = 5)
 {
     Serial.println("\n========== Sending Image ==========");
-    Serial.printf("Image ID: %u, Total packets: %d\n", imageId, BLOCK_TOTAL);
+    Serial.printf("Image ID: %u, %d strips x %d blocks = %d pkts\n",
+                  imageId, TOTAL_STRIPS, BLOCKS_PER_STRIP, TOTAL_PACKETS);
 
-    // --- 发送开始包 ---
+    // --- START ---
     EspnowCtrlPacket startPkt;
     memset(&startPkt, 0, sizeof(startPkt));
     startPkt.header.type    = PKT_IMAGE_START;
     startPkt.header.imageId = imageId;
-    startPkt.header.total   = BLOCK_TOTAL;
-    startPkt.param          = (IMG_WIDTH << 16) | IMG_HEIGHT;
+    startPkt.header.total   = TOTAL_PACKETS;
 
     if (!sendPacket((uint8_t *)&startPkt, sizeof(startPkt))) {
-        Serial.println("[Sender] Failed to send START packet!");
+        Serial.println("[Sender] START failed!");
         return;
     }
     Serial.println("[Sender] START sent OK");
-
     delay(10);
 
-    // --- 发送数据包 ---
+    // --- DATA ---
     EspnowImagePacket pkt;
-    int sentCount = 0;
-    int retryCount = 0;
+    int sent = 0, retries = 0;
+    unsigned long t0 = millis();
 
-    for (int row = 0; row < BLOCK_ROWS; row++) {
-        for (int col = 0; col < BLOCK_COLS; col++) {
-            // 填充包头
+    for (int strip = 0; strip < TOTAL_STRIPS; strip++) {
+        for (int block = 0; block < BLOCKS_PER_STRIP; block++) {
             memset(&pkt, 0, sizeof(pkt));
             pkt.header.type    = PKT_IMAGE_DATA;
             pkt.header.imageId = imageId;
-            pkt.header.seq     = row * BLOCK_COLS + col;
-            pkt.header.total   = BLOCK_TOTAL;
-            pkt.header.x       = col;
-            pkt.header.y       = row;
-            pkt.header.w       = BLOCK_SIZE;
-            pkt.header.h       = BLOCK_SIZE;
+            pkt.header.seq     = strip * BLOCKS_PER_STRIP + block;
+            pkt.header.total   = TOTAL_PACKETS;
+            pkt.header.stripIdx = strip;
+            pkt.header.blockIdx = block;
+            pkt.header.w       = BLOCK_W;
+            pkt.header.h       = BLOCK_H;
 
-            // 拷贝 8×8 像素数据 (RGB565)
+            // 拷贝 8×8 像素
             int idx = 0;
-            for (int py = 0; py < BLOCK_SIZE; py++) {
-                for (int px = 0; px < BLOCK_SIZE; px++) {
-                    int imgX = col * BLOCK_SIZE + px;
-                    int imgY = row * BLOCK_SIZE + py;
-                    uint16_t c = pixels[imgY][imgX];
+            for (int py = 0; py < BLOCK_W; py++) {
+                for (int px = 0; px < BLOCK_H; px++) {
+                    uint16_t c = pixels[strip * BLOCK_W + py]
+                                        [block * BLOCK_H + px];
                     pkt.data[idx++] = c & 0xFF;
                     pkt.data[idx++] = (c >> 8) & 0xFF;
                 }
             }
 
-            // 发送（带重试）
             bool ok = false;
-            for (int retry = 0; retry < 3; retry++) {
-                if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) {
-                    ok = true;
-                    break;
-                }
-                retryCount++;
+            for (int r = 0; r < 3; r++) {
+                if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) { ok = true; break; }
+                retries++;
                 delay(2);
             }
-
-            if (!ok) {
-                Serial.printf("[Sender] FAILED seq=%d (x=%d,y=%d)\n",
-                              pkt.header.seq, col, row);
-            } else {
-                sentCount++;
-            }
-
-            delay(waitMs);  // 包间延时，避免接收端缓冲溢出
+            if (ok) sent++;
+            delay(waitMs);
         }
-
-        // 每行进度输出
-        Serial.printf("[Sender] Row %d/30: %d blocks sent\n",
-                      row + 1, (row + 1) * BLOCK_COLS);
+        Serial.printf("[Sender] Strip %d/%d (%d%%)\n",
+                      strip + 1, TOTAL_STRIPS,
+                      (strip + 1) * 100 / TOTAL_STRIPS);
     }
 
-    // --- 发送结束包 ---
+    unsigned long elapsed = millis() - t0;
+
+    // --- END ---
     EspnowCtrlPacket endPkt;
     memset(&endPkt, 0, sizeof(endPkt));
     endPkt.header.type    = PKT_IMAGE_END;
     endPkt.header.imageId = imageId;
-    endPkt.header.total   = BLOCK_TOTAL;
-    endPkt.param          = sentCount;
+    endPkt.header.total   = TOTAL_PACKETS;
+    endPkt.param          = sent;
+    sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
 
-    if (!sendPacket((uint8_t *)&endPkt, sizeof(endPkt))) {
-        Serial.println("[Sender] Failed to send END packet!");
-    } else {
-        Serial.println("[Sender] END sent OK");
-    }
-
-    // --- 完成 ---
     Serial.println("========== Send Complete ==========");
-    Serial.printf("Sent: %d/%d, Retries: %d\n",
-                  sentCount, BLOCK_TOTAL, retryCount);
+    Serial.printf("Sent: %d/%d, Retries: %d\n", sent, TOTAL_PACKETS, retries);
+    Serial.printf("Time: %lu ms (%.1f s)\n", elapsed, elapsed / 1000.0);
+    if (elapsed > 0) {
+        float kBps = sent * BLOCK_DATA_BYTES / (float)elapsed * 1000 / 1024;
+        Serial.printf("Data rate: %.1f KB/s\n", kBps);
+    }
 }
