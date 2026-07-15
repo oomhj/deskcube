@@ -47,7 +47,13 @@ enum PacketType : uint8_t {
     PKT_IMAGE_END   = 0x03,
     PKT_ACK         = 0x04,
     PKT_NACK        = 0x05,
+    PKT_JPG_START   = 0x10,
+    PKT_JPG_DATA    = 0x11,
+    PKT_JPG_END     = 0x12,
 };
+
+// JPEG chunk size for ESP-NOW (max 250B per packet, minus 10B header)
+#define JPG_CHUNK_DATA_BYTES  239  // 250 - 11B header
 
 // ---------- 数据结构 ----------
 #pragma pack(push, 1)
@@ -69,6 +75,12 @@ struct EspnowImagePacket {
     uint8_t  data[BLOCK_DATA_BYTES];
 };
 
+// JPEG 数据包: 10B 包头 + 240B JPEG 数据 = 250B
+struct EspnowJpgPacket {
+    EspnowPacketHeader header;
+    uint8_t  data[JPG_CHUNK_DATA_BYTES];
+};
+
 // 控制包
 struct EspnowCtrlPacket {
     EspnowPacketHeader header;
@@ -80,6 +92,8 @@ struct EspnowCtrlPacket {
 // ---------- 静态校验 ----------
 static_assert(sizeof(EspnowImagePacket) <= ESPNOW_MAX_DATA,
               "Packet exceeds ESP-NOW max!");
+static_assert(sizeof(EspnowJpgPacket) <= ESPNOW_MAX_DATA,
+              "JPG packet exceeds ESP-NOW max!");
 static_assert(BLOCK_DATA_BYTES == 128,
               "8x8 block = 128 bytes pixel data");
 static_assert(TOTAL_PACKETS == 900,

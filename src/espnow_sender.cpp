@@ -113,6 +113,54 @@ bool sendImageBlock(uint16_t imageId, int stripIdx, int blockIdx, const uint8_t 
 }
 
 // =====================================================================
+// ESP-NOW 发送 JPEG 文件（分片发送，接收机负责解码）
+// =====================================================================
+
+bool sendJpegFile(uint16_t imageId, const uint8_t *jpgData, int jpgSize) {
+    int totalChunks = (jpgSize + JPG_CHUNK_DATA_BYTES - 1) / JPG_CHUNK_DATA_BYTES;
+
+    // START
+    EspnowCtrlPacket startPkt;
+    memset(&startPkt, 0, sizeof(startPkt));
+    startPkt.header.type    = PKT_JPG_START;
+    startPkt.header.imageId = imageId;
+    startPkt.header.total   = totalChunks;
+    startPkt.param          = jpgSize;
+    if (!sendPacket((uint8_t *)&startPkt, sizeof(startPkt))) return false;
+
+    // DATA chunks
+    EspnowJpgPacket pkt;
+    for (int i = 0; i < totalChunks; i++) {
+        int offset = i * JPG_CHUNK_DATA_BYTES;
+        int chunkLen = jpgSize - offset;
+        if (chunkLen > JPG_CHUNK_DATA_BYTES) chunkLen = JPG_CHUNK_DATA_BYTES;
+
+        memset(&pkt, 0, sizeof(pkt));
+        pkt.header.type    = PKT_JPG_DATA;
+        pkt.header.imageId = imageId;
+        pkt.header.seq     = i;
+        pkt.header.total   = totalChunks;
+        memcpy(pkt.data, jpgData + offset, chunkLen);
+
+        bool ok = false;
+        for (int r = 0; r < 3; r++) {
+            if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) { ok = true; break; }
+            delay(5);
+        }
+        if (!ok) return false;
+    }
+
+    // END
+    EspnowCtrlPacket endPkt;
+    memset(&endPkt, 0, sizeof(endPkt));
+    endPkt.header.type    = PKT_JPG_END;
+    endPkt.header.imageId = imageId;
+    endPkt.header.total   = totalChunks;
+    endPkt.param          = jpgSize;
+    return sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
+}
+
+// =====================================================================
 // LCD 显示（用于串口传图队列模式）
 // =====================================================================
 

@@ -60,9 +60,7 @@ static bool qPop(int *stripIdx, const uint8_t **data) {
 // =====================================================================
 // JPEG 解码
 // =====================================================================
-#include <TJpg_Decoder.h>
-
-// 串口接收缓冲（JPEG 回调也会用到，故提前声明）
+// 串口接收缓冲
 static uint8_t recvBuf[STRIP_BUFFER_BYTES];
 static int     recvPos = 0, recvIdx = 0;
 static uint16_t recvLen = 0;
@@ -72,91 +70,9 @@ static int      jpgTotalSize = 0;     // JPEG 文件总字节数
 static int      jpgRecvSize = 0;      // 已接收 JPEG 字节数
 static int      jpgChunkRemain = 0;   // 当前 CMD_JPG_DATA 帧剩余 payload 字节
 static unsigned long jpgRecvStart = 0; // 接收开始时间（超时用）
-static bool     jpgDecoding = false;  // 正在解码
 
-// JPEG 全局状态
 static uint16_t g_imgId = 1;
 static int      g_totalSent = 0;
-
-// 2 个 strip 累积器（16×16 tile 跨越 2 个 strip 时需要同时追踪）
-static uint8_t  jpgAccum[2][STRIP_BUFFER_BYTES];
-static int      jpgAccumIdx[2] = {-1, -1};      // 对应的 strip 序号
-static uint32_t jpgAccumMap[2] = {0};            // 块位图（每 bit 一个 block）
-
-// 获取累积器 slot（自动替换已满的 strip）
-static int jpgGetSlot(int stripIdx) {
-  for (int i = 0; i < 2; i++) {
-    if (jpgAccumIdx[i] == stripIdx) return i;         // 匹配
-    if (jpgAccumIdx[i] < 0) { jpgAccumIdx[i] = stripIdx; return i; }  // 空
-  }
-  // 都占用了 → 找一个满的去刷新
-  for (int i = 0; i < 2; i++) {
-    if (jpgAccumMap[i] == 0x3FFFFFFF) {  // 30 blocks all received
-      displayStrip(jpgAccumIdx[i], jpgAccum[i]);
-      Serial.write(0x06);
-      g_totalSent += 30;
-      jpgAccumIdx[i] = stripIdx;
-      jpgAccumMap[i] = 0;
-      memset(jpgAccum[i], 0, STRIP_BUFFER_BYTES);
-      return i;
-    }
-  }
-  return -1;  // 不应发生
-}
-
-// TJpg_Decoder 输出回调
-static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  // 将 tile 拆成 8×8 子块，逐个发送
-  for (int by = 0; by < h; by += BLOCK_H) {
-    for (int bx = 0; bx < w; bx += BLOCK_W) {
-      int si = (y + by) / STRIP_H;
-      int bi = (x + bx) / BLOCK_H;
-
-      // 提取 8×8 像素块（RGB565 格式）
-      uint8_t block[BLOCK_DATA_BYTES];
-      for (int py = 0; py < BLOCK_H; py++) {
-        int srcOff = ((by + py) * w + bx) * 2;
-        int dstOff = py * BLOCK_H * 2;
-        memcpy(block + dstOff, (uint8_t *)bitmap + srcOff, BLOCK_H * 2);
-      }
-
-      // 发送
-      sendImageBlock(g_imgId, si, bi, block);
-
-      // 累积到对应的 strip 缓冲区
-      int slot = jpgGetSlot(si);
-      if (slot >= 0) {
-        jpgAccumMap[slot] |= (1UL << bi);
-        // 写入像素行（按绝对坐标定位到 accum 中正确位置）
-        for (int py = 0; py < BLOCK_H; py++) {
-          int absY   = y + by + py;
-          int relY   = absY % STRIP_H;
-          int srcOff = (py * w + bx) * 2;
-          memcpy(jpgAccum[slot] + relY * IMG_WIDTH * 2 + (x + bx) * 2,
-                 (uint8_t *)bitmap + ((by + py) * w + bx) * 2, BLOCK_H * 2);
-        }
-      }
-    }
-  }
-
-  // tile 行结束 → 尝试 flush 涉及的 strip
-  if (x + w >= IMG_WIDTH) {
-    int firstSi = y / STRIP_H;
-    int lastSi  = (y + h - 1) / STRIP_H;
-    for (int si = firstSi; si <= lastSi; si++) {
-      for (int i = 0; i < 2; i++) {
-        if (jpgAccumIdx[i] == si && jpgAccumMap[i] == 0x3FFFFFFF) {
-          displayStrip(si, jpgAccum[i]);
-          Serial.write(0x06);
-          g_totalSent += 30;
-          jpgAccumIdx[i] = -1;
-          jpgAccumMap[i] = 0;
-        }
-      }
-    }
-  }
-  return true;
-}
 
 void setup() {
   Serial.begin(115200); Serial.println();
@@ -192,9 +108,8 @@ void setup() {
   }
 
   espnowSenderInit(peerMac, &tft);
-  TJpgDec.setCallback(jpegOutput);
 
-  Serial.println("[Base] Queue+JPEG mode (Q_SIZE=4, RX_BUF=4096)");
+  Serial.println("[Base] Queue+JPEG forward mode (Q_SIZE=4, RX_BUF=4096)");
 
   // =================================================================
   // 主循环
@@ -342,23 +257,17 @@ case S_DATA: {
           jpgChunkRemain--;
         }
         if (jpgRecvSize >= jpgTotalSize) {
-          Serial.printf("  JPEG received (%d bytes), decoding...\n", jpgRecvSize);
+          Serial.printf("  JPEG received (%d bytes), sending via ESP-NOW...\n", jpgRecvSize);
 
-          // 解码（输出回调填充 strip 并入队）
-          jpgDecoding = true;
           if (jpgBuf) {
-            JRESULT jr = TJpgDec.drawJpg(0, 0, jpgBuf, jpgTotalSize);
-            if (jr != JDR_OK) {
-              Serial.printf("  JPEG decode ERROR: %d\n", jr);
-            } else {
-              Serial.println("  JPEG decode OK");
-            }
-          } else {
-            Serial.println("  JPEG ERROR: jpgBuf is NULL (malloc failed?)");
+            bool ok = sendJpegFile(g_imgId, jpgBuf, jpgTotalSize);
+            Serial.printf("  ESP-NOW JPEG %s\n", ok ? "OK" : "FAILED");
           }
-          jpgDecoding = false;
-
           if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
+
+          // 收齐后直接回 30 个 ACK（接收机解码后自动显示）
+          for (int i = 0; i < 30; i++) Serial.write(0x06);
+
           sState = S_IDLE;
         }
         break;
