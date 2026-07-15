@@ -29,32 +29,10 @@ static void drainSerial(uint16_t len) {
 }
 
 // =====================================================================
-// JPEG 解码 + 渲染
+// JPEG 解码 + 渲染（使用共享渲染器）
 // =====================================================================
 #include <TJpg_Decoder.h>
-
-static uint8_t jpgRowBuf[IMG_WIDTH * 16 * 2];
-static int     jpgBufStartY = -1;
-static uint16_t jpgRowDone = 0;
-
-static bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  if (jpgBufStartY < 0) {
-    jpgBufStartY = y; jpgRowDone = 0;
-    memset(jpgRowBuf, 0, sizeof(jpgRowBuf));
-  }
-  int bufY = y - jpgBufStartY;
-  for (int row = 0; row < h; row++)
-    memcpy(jpgRowBuf + (bufY + row) * IMG_WIDTH * 2 + x * 2,
-           (uint8_t *)bitmap + row * w * 2, w * 2);
-  if (x + w >= IMG_WIDTH)
-    for (int row = 0; row < h; row++) jpgRowDone |= (1 << (bufY + row));
-  if (jpgRowDone == 0xFFFF) {
-    int base = jpgBufStartY / 8;
-    for (int si = 0; si < 2; si++) displayStrip(base + si, jpgRowBuf + si * 3840);
-    jpgBufStartY = -1; jpgRowDone = 0;
-  }
-  return true;
-}
+#include "jpeg_render.h"
 
 // =====================================================================
 // JPEG 接收状态
@@ -102,7 +80,8 @@ void setup() {
   }
 
   espnowSenderInit(peerMac, &tft);
-  TJpgDec.setCallback(tftOutput);
+  renderTargetTFT = &tft;
+  TJpgDec.setCallback(jpegRenderCallback);
 
   Serial.println("[Base] JPEG only mode");
 

@@ -46,33 +46,13 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len);
 static void printStats();
 
 // =====================================================================
-// JPEG 解码渲染（与基站一致的 16 行缓冲 + strip 切分）
+// JPEG 解码渲染（与基站共用 jpeg_render.h）
 // =====================================================================
 
-static uint8_t jpgRowBuf[IMG_WIDTH * 16 * 2];
-static int     jpgBufStartY = -1;
-static uint16_t jpgRowDone = 0;
+#include "jpeg_render.h"
 
 static bool jpgDisplay(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-    if (jpgBufStartY < 0) {
-        jpgBufStartY = y; jpgRowDone = 0;
-        memset(jpgRowBuf, 0, sizeof(jpgRowBuf));
-    }
-    int bufY = y - jpgBufStartY;
-    for (int row = 0; row < h; row++)
-        memcpy(jpgRowBuf + (bufY + row) * IMG_WIDTH * 2 + x * 2,
-               (uint8_t *)bitmap + row * w * 2, w * 2);
-    if (x + w >= IMG_WIDTH)
-        for (int row = 0; row < h; row++) jpgRowDone |= (1 << (bufY + row));
-    if (jpgRowDone == 0xFFFF) {
-        int base = jpgBufStartY / 8;
-        for (int si = 0; si < 2; si++) {
-            lcd->pushImage(0, (base + si) * 8, IMG_WIDTH, 8,
-                           (uint16_t *)(jpgRowBuf + si * 3840));
-        }
-        jpgBufStartY = -1; jpgRowDone = 0;
-    }
-    return true;
+    return jpegRenderCallback(x, y, w, h, bitmap);
 }
 
 // =====================================================================
@@ -86,7 +66,8 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     block = new TFT_eSprite(lcd);
     block->createSprite(BLOCK_W, BLOCK_H);
 
-    // TJpg_Decoder 输出回调
+    // TJpg_Decoder 输出回调（共享渲染器）
+    renderTargetTFT = lcd;
     TJpgDec.setCallback(jpgDisplay);
 
     memset(&rxState, 0, sizeof(rxState));
