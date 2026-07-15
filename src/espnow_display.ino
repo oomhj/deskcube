@@ -76,67 +76,82 @@ static bool     jpgDecoding = false;  // 正在解码
 static uint16_t g_imgId = 1;
 static int      g_totalSent = 0;
 
-// 当前 strip 的 8×8 块发送进度
-static uint8_t jpgStripBuf[STRIP_BUFFER_BYTES];
-static int     jpgCurStrip = -1;   // 正在累积的 strip
-static int     jpgCurBlocks = 0;   // 已发送块数
+// 2 个 strip 累积器（16×16 tile 跨越 2 个 strip 时需要同时追踪）
+static uint8_t  jpgAccum[2][STRIP_BUFFER_BYTES];
+static int      jpgAccumIdx[2] = {-1, -1};      // 对应的 strip 序号
+static uint32_t jpgAccumMap[2] = {0};            // 块位图（每 bit 一个 block）
 
-static void flushJpgStrip() {
-  if (jpgCurStrip < 0) return;
-  displayStrip(jpgCurStrip, jpgStripBuf);
-  Serial.write(0x06);       // strip 完成 → ACK
-  g_totalSent += jpgCurBlocks;
-  jpgCurStrip = -1;
-  jpgCurBlocks = 0;
+// 获取累积器 slot（自动替换已满的 strip）
+static int jpgGetSlot(int stripIdx) {
+  for (int i = 0; i < 2; i++) {
+    if (jpgAccumIdx[i] == stripIdx) return i;         // 匹配
+    if (jpgAccumIdx[i] < 0) { jpgAccumIdx[i] = stripIdx; return i; }  // 空
+  }
+  // 都占用了 → 找一个满的去刷新
+  for (int i = 0; i < 2; i++) {
+    if (jpgAccumMap[i] == 0x3FFFFFFF) {  // 30 blocks all received
+      displayStrip(jpgAccumIdx[i], jpgAccum[i]);
+      Serial.write(0x06);
+      g_totalSent += 30;
+      jpgAccumIdx[i] = stripIdx;
+      jpgAccumMap[i] = 0;
+      memset(jpgAccum[i], 0, STRIP_BUFFER_BYTES);
+      return i;
+    }
+  }
+  return -1;  // 不应发生
 }
 
-// TJpg_Decoder 输出回调：收到一个解码后的 tile → 拆成 8×8 块直接 ESP-NOW 发送
+// TJpg_Decoder 输出回调
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-  // tile 拆成 8×8 的子块
+  // 将 tile 拆成 8×8 子块，逐个发送
   for (int by = 0; by < h; by += BLOCK_H) {
     for (int bx = 0; bx < w; bx += BLOCK_W) {
-      int stripIdx = (y + by) / STRIP_H;
-      int blockIdx = (x + bx) / BLOCK_H;
+      int si = (y + by) / STRIP_H;
+      int bi = (x + bx) / BLOCK_H;
 
-      // 如果换 strip 了，完成上一个
-      if (stripIdx != jpgCurStrip && jpgCurStrip >= 0) {
-        flushJpgStrip();
-      }
-
-      // 初始化新 strip
-      if (jpgCurStrip < 0) {
-        jpgCurStrip = stripIdx;
-        jpgCurBlocks = 0;
-        memset(jpgStripBuf, 0, sizeof(jpgStripBuf));
-      }
-
-      // 从 bitmap 中提取 8×8 像素块
+      // 提取 8×8 像素块（RGB565 格式）
       uint8_t block[BLOCK_DATA_BYTES];
-      int outIdx = 0;
       for (int py = 0; py < BLOCK_H; py++) {
-        int tileRow = by + py;        // 在 tile 内的行
-        int imgX = x + bx;            // 块在图片中的 X
-        // bitmap 的 row = tileRow * w, 每像素 2 字节
-        int srcOff = (tileRow * w + bx) * 2;
-        memcpy(block + outIdx, (uint8_t *)bitmap + srcOff, BLOCK_H * 2);
-        outIdx += BLOCK_H * 2;
-
-        // 同时写入 jpgStripBuf 供 LCD 显示用
-        int absY = y + tileRow;
-        int stripRelY = absY % STRIP_H;
-        memcpy(jpgStripBuf + stripRelY * IMG_WIDTH * 2 + imgX * 2,
-               (uint8_t *)bitmap + srcOff, BLOCK_H * 2);
+        int srcOff = ((by + py) * w + bx) * 2;
+        int dstOff = py * BLOCK_H * 2;
+        memcpy(block + dstOff, (uint8_t *)bitmap + srcOff, BLOCK_H * 2);
       }
 
-      // 直接发送这个 8×8 块
-      sendImageBlock(g_imgId, stripIdx, blockIdx, block);
-      jpgCurBlocks++;
+      // 发送
+      sendImageBlock(g_imgId, si, bi, block);
+
+      // 累积到对应的 strip 缓冲区
+      int slot = jpgGetSlot(si);
+      if (slot >= 0) {
+        jpgAccumMap[slot] |= (1UL << bi);
+        // 写入像素行（按绝对坐标定位到 accum 中正确位置）
+        for (int py = 0; py < BLOCK_H; py++) {
+          int absY   = y + by + py;
+          int relY   = absY % STRIP_H;
+          int srcOff = (py * w + bx) * 2;
+          memcpy(jpgAccum[slot] + relY * IMG_WIDTH * 2 + (x + bx) * 2,
+                 (uint8_t *)bitmap + ((by + py) * w + bx) * 2, BLOCK_H * 2);
+        }
+      }
     }
   }
 
-  // 最后一列 → 刷出当前 strip
+  // tile 行结束 → 尝试 flush 涉及的 strip
   if (x + w >= IMG_WIDTH) {
-    flushJpgStrip();
+    int firstSi = y / STRIP_H;
+    int lastSi  = (y + h - 1) / STRIP_H;
+    for (int si = firstSi; si <= lastSi; si++) {
+      for (int i = 0; i < 2; i++) {
+        if (jpgAccumIdx[i] == si && jpgAccumMap[i] == 0x3FFFFFFF) {
+          displayStrip(si, jpgAccum[i]);
+          Serial.write(0x06);
+          g_totalSent += 30;
+          jpgAccumIdx[i] = -1;
+          jpgAccumMap[i] = 0;
+        }
+      }
+    }
   }
   return true;
 }
