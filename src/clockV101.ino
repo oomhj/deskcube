@@ -8,6 +8,7 @@
 #define VERSION "V101"
 
 
+#ifndef ESPNOW_MODE_SENDER
 
 void readWifiConf() // 读取wifi配置
 {
@@ -519,25 +520,45 @@ void imgAnim()
 {
   int x = 80, y = 94, dt = 30; // 瘦子版dt=10毫秒 胖子30较为合适
 
-  TJpgDec.drawJpg(x, y, i0, sizeof(i0)); // 打一张图片延时一段时间，达到动画效果
+#ifdef LOAD_TJPG
+  TJpgDec.drawJpg(x, y, i0, sizeof(i0));
+#endif // 打一张图片延时一段时间，达到动画效果
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i1, sizeof(i1));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i2, sizeof(i2));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i3, sizeof(i3));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i4, sizeof(i4));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i5, sizeof(i5));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i6, sizeof(i6));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i7, sizeof(i7));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i8, sizeof(i8));
+#endif
   delay(dt);
+#ifdef LOAD_TJPG
   TJpgDec.drawJpg(x, y, i9, sizeof(i9));
+#endif
   delay(dt);
 }
 unsigned long oldTime = 0, imgNum = 1;
@@ -566,7 +587,9 @@ void imgDisplay()
     const uint8_t *frames[] = {my_1, my_2, my_3, my_4, my_5, my_6, my_7, my_8, my_9, my_10, my_11, my_12};
     const size_t sizes[] = {sizeof(my_1), sizeof(my_2), sizeof(my_3), sizeof(my_4), sizeof(my_5), sizeof(my_6), sizeof(my_7), sizeof(my_8), sizeof(my_9), sizeof(my_10), sizeof(my_11), sizeof(my_12)};
     const int maxFrame = 12;
-    TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+  #ifdef LOAD_TJPG
+  TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+#endif
     if (imgNum >= maxFrame) imgNum = 1;
   }
   // === 动画-龙猫转圈 (80帧) ===
@@ -575,7 +598,9 @@ void imgDisplay()
     const uint8_t *frames[] = {img_0, img_1, img_2, img_3, img_4, img_5, img_6, img_7, img_8, img_9, img_10, img_11, img_12, img_13, img_14, img_15, img_16, img_17, img_18, img_19, img_20, img_21, img_22, img_23, img_24, img_25, img_26, img_27, img_28, img_29, img_30, img_31, img_32, img_33, img_34, img_35, img_36, img_37, img_38, img_39, img_40, img_41, img_42, img_43, img_44, img_45, img_46, img_47, img_48, img_49, img_50, img_51, img_52, img_53, img_54, img_55, img_56, img_57, img_58, img_59, img_60, img_61, img_62, img_63, img_64, img_65, img_66, img_67, img_68, img_69, img_70, img_71, img_72, img_73, img_74, img_75, img_76, img_77, img_78, img_79};
     const size_t sizes[] = {sizeof(img_0), sizeof(img_1), sizeof(img_2), sizeof(img_3), sizeof(img_4), sizeof(img_5), sizeof(img_6), sizeof(img_7), sizeof(img_8), sizeof(img_9), sizeof(img_10), sizeof(img_11), sizeof(img_12), sizeof(img_13), sizeof(img_14), sizeof(img_15), sizeof(img_16), sizeof(img_17), sizeof(img_18), sizeof(img_19), sizeof(img_20), sizeof(img_21), sizeof(img_22), sizeof(img_23), sizeof(img_24), sizeof(img_25), sizeof(img_26), sizeof(img_27), sizeof(img_28), sizeof(img_29), sizeof(img_30), sizeof(img_31), sizeof(img_32), sizeof(img_33), sizeof(img_34), sizeof(img_35), sizeof(img_36), sizeof(img_37), sizeof(img_38), sizeof(img_39), sizeof(img_40), sizeof(img_41), sizeof(img_42), sizeof(img_43), sizeof(img_44), sizeof(img_45), sizeof(img_46), sizeof(img_47), sizeof(img_48), sizeof(img_49), sizeof(img_50), sizeof(img_51), sizeof(img_52), sizeof(img_53), sizeof(img_54), sizeof(img_55), sizeof(img_56), sizeof(img_57), sizeof(img_58), sizeof(img_59), sizeof(img_60), sizeof(img_61), sizeof(img_62), sizeof(img_63), sizeof(img_64), sizeof(img_65), sizeof(img_66), sizeof(img_67), sizeof(img_68), sizeof(img_69), sizeof(img_70), sizeof(img_71), sizeof(img_72), sizeof(img_73), sizeof(img_74), sizeof(img_75), sizeof(img_76), sizeof(img_77), sizeof(img_78), sizeof(img_79)};
     const int maxFrame = 80;
-    TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+  #ifdef LOAD_TJPG
+  TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+#endif
     if (imgNum >= maxFrame) imgNum = 1;
   }
   // === 动画-打乒乓 (27帧, 不含11号) ===
@@ -584,7 +609,9 @@ void imgDisplay()
     const uint8_t *frames[] = {pingpang_0, pingpang_1, pingpang_2, pingpang_3, pingpang_4, pingpang_5, pingpang_6, pingpang_7, pingpang_8, pingpang_9, pingpang_10, pingpang_12, pingpang_13, pingpang_14, pingpang_15, pingpang_16, pingpang_17, pingpang_18, pingpang_19, pingpang_20, pingpang_21, pingpang_22, pingpang_23, pingpang_24, pingpang_25, pingpang_26, pingpang_27};
     const size_t sizes[] = {sizeof(pingpang_0), sizeof(pingpang_1), sizeof(pingpang_2), sizeof(pingpang_3), sizeof(pingpang_4), sizeof(pingpang_5), sizeof(pingpang_6), sizeof(pingpang_7), sizeof(pingpang_8), sizeof(pingpang_9), sizeof(pingpang_10), sizeof(pingpang_12), sizeof(pingpang_13), sizeof(pingpang_14), sizeof(pingpang_15), sizeof(pingpang_16), sizeof(pingpang_17), sizeof(pingpang_18), sizeof(pingpang_19), sizeof(pingpang_20), sizeof(pingpang_21), sizeof(pingpang_22), sizeof(pingpang_23), sizeof(pingpang_24), sizeof(pingpang_25), sizeof(pingpang_26), sizeof(pingpang_27)};
     const int maxFrame = 27;
-    TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+  #ifdef LOAD_TJPG
+  TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+#endif
     if (imgNum >= maxFrame) imgNum = 1;
   }
   // === 动画-太空人 (10帧) ===
@@ -593,7 +620,9 @@ void imgDisplay()
     const uint8_t *frames[] = {i0, i1, i2, i3, i4, i5, i6, i7, i8, i9};
     const size_t sizes[] = {sizeof(i0), sizeof(i1), sizeof(i2), sizeof(i3), sizeof(i4), sizeof(i5), sizeof(i6), sizeof(i7), sizeof(i8), sizeof(i9)};
     const int maxFrame = 10;
-    TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+  #ifdef LOAD_TJPG
+  TJpgDec.drawJpg(x, y, frames[imgNum - 1], sizes[imgNum - 1]);
+#endif
     if (imgNum >= maxFrame) imgNum = 1;
   }
   // === 动画-龙猫跳绳 (40帧, y=84) ===
@@ -602,7 +631,9 @@ void imgDisplay()
     const uint8_t *frames[] = {quan_0, quan_1, quan_2, quan_3, quan_4, quan_5, quan_6, quan_7, quan_8, quan_9, quan_10, quan_11, quan_12, quan_13, quan_14, quan_15, quan_16, quan_17, quan_18, quan_19, quan_20, quan_21, quan_22, quan_23, quan_24, quan_25, quan_26, quan_27, quan_28, quan_29, quan_30, quan_31, quan_32, quan_33, quan_34, quan_35, quan_36, quan_37, quan_38, quan_39};
     const size_t sizes[] = {sizeof(quan_0), sizeof(quan_1), sizeof(quan_2), sizeof(quan_3), sizeof(quan_4), sizeof(quan_5), sizeof(quan_6), sizeof(quan_7), sizeof(quan_8), sizeof(quan_9), sizeof(quan_10), sizeof(quan_11), sizeof(quan_12), sizeof(quan_13), sizeof(quan_14), sizeof(quan_15), sizeof(quan_16), sizeof(quan_17), sizeof(quan_18), sizeof(quan_19), sizeof(quan_20), sizeof(quan_21), sizeof(quan_22), sizeof(quan_23), sizeof(quan_24), sizeof(quan_25), sizeof(quan_26), sizeof(quan_27), sizeof(quan_28), sizeof(quan_29), sizeof(quan_30), sizeof(quan_31), sizeof(quan_32), sizeof(quan_33), sizeof(quan_34), sizeof(quan_35), sizeof(quan_36), sizeof(quan_37), sizeof(quan_38), sizeof(quan_39)};
     const int maxFrame = 40;
-    TJpgDec.drawJpg(x, 84, frames[imgNum - 1], sizes[imgNum - 1]); // y=84
+  #ifdef LOAD_TJPG
+  TJpgDec.drawJpg(x, 84, frames[imgNum - 1], sizes[imgNum - 1]);
+#endif // y=84
     if (imgNum >= maxFrame) imgNum = 1;
   }
 }
@@ -792,8 +823,12 @@ void change_color()
 
   getCityCode(); // 通过IP地址获取城市代码
 
-  TJpgDec.drawJpg(161, 171, temperature, sizeof(temperature)); // 温度图标
-  TJpgDec.drawJpg(159, 130, humidity, sizeof(humidity));       // 湿度图标
+#ifdef LOAD_TJPG
+  TJpgDec.drawJpg(161, 171, temperature, sizeof(temperature));
+#endif // 温度图标
+#ifdef LOAD_TJPG
+  TJpgDec.drawJpg(159, 130, humidity, sizeof(humidity));
+#endif       // 湿度图标
 
   digitalClockDisplay();
 }
@@ -1025,108 +1060,69 @@ void handle_restart()
 
 
 
-
+#endif // !ESPNOW_MODE_SENDER
 
 void setup()
 {
-  Serial.begin(115200); // 初始化串口
-  Serial.println();     // 打印回车换行
+  Serial.begin(115200);
+  Serial.println();
 
-  EEPROM.begin(512); // 读取eeprom配置
+#if defined(ESPNOW_MODE_RECEIVER)
+  // ===== 接收端 =====
+  EEPROM.begin(512);
   readWifiConf();
 
-  if (wifiConf.frontColor != 0 && wifiConf.frontColor != 0xFFFF)
-    frontColor = wifiConf.frontColor;
-  else
-    frontColor = TFT_WHITE;
+  tft.init();
+  tft.setRotation(0);
+  tft.fillScreen(0x0000);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("ESP-NOW Receiver", 40, 110, 2);
 
-  tft.init();                            // TFT初始化
-  tft.setRotation(0);                    // 旋转角度0-3
-  tft.fillScreen(0x0000);                // 清屏
-  tft.setTextColor(frontColor, bgColor); // 设置字体颜色
+  espnowReceiverInit(&tft);
 
-  // === LCD 32x32 块测试（纯测试，不进时钟）===
-  lcdBlockTest();
-  Serial.println("LCD 32x32 块测试完成，停留在测试画面");
-  while (1) { delay(1000); }
+#elif defined(ESPNOW_MODE_SENDER)
+  // ===== 发送端（带 LCD 显示）=====
+  tft.init();
+  tft.setRotation(0);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("ESP-NOW Sender", 50, 110, 2);
+  delay(1000);
 
-  connect_wifi(); // 联网处理
+  // 对端 MAC 地址（先用广播，实际使用时替换为接收端 MAC）
+  uint8_t peerMac[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-  Gif_Mode = wifiConf.gif_mode;
+  espnowSenderInit(peerMac, &tft);
 
-  // 连接mqtt服务器
-  mqtt_client.setServer(mqtt_broker, mqtt_port);
-  mqtt_client.setCallback(mqtt_callback);
-  while (!mqtt_client.connected())
-  {
-    String client_id = "esp8266-client-";
-    client_id += String(WiFi.macAddress());
-    Serial.printf("The client %s connects to the public mqtt broker\n", client_id.c_str());
-    if (mqtt_client.connect(client_id.c_str(), mqtt_username, mqtt_password))
-    {
-      Serial.println("Public emqx mqtt broker connected");
-    }
-    else
-    {
-      Serial.print("failed with state ");
-      Serial.print(mqtt_client.state());
-      delay(2000);
-    }
+  // 循环发送（图片在 sendImage 内部逐行生成，无需大数组）
+  uint16_t imgId = 1;
+  while (1) {
+    Serial.printf("\nSending image #%u...\n", imgId);
+    sendImage(imgId++, 3);
+    delay(5000);
   }
-  mqtt_client.subscribe(topic);
 
-  setUpOverTheAirProgramming(); // 开启OTA升级服务
+#else
+  // ===== 原始 LCD 测试（无 ESP-NOW 模式）=====
+  EEPROM.begin(512);
+  readWifiConf();
 
-  Serial.println("Starting UDP"); // 连接时间服务器
-  Udp.begin(localPort);
-  Serial.print("Local port: ");
-  Serial.println(Udp.localPort());
-  Serial.println("waiting for sync");
-  setSyncProvider(getNtpTime);
-  setSyncInterval(300);
+  tft.init();
+  tft.setRotation(0);
+  tft.fillScreen(0x0000);
+  tft.setTextColor(frontColor, bgColor);
 
-  TJpgDec.setJpgScale(1);          // 设置放大倍数
-  TJpgDec.setSwapBytes(true);      // 交换字节
-  TJpgDec.setCallback(tft_output); // 回调函数
-
-  TJpgDec.drawJpg(0, 0, watchtop, sizeof(watchtop)); // 显示顶部图标 240*20
-  // TJpgDec.drawJpg(0, 220, watchbottom, sizeof(watchbottom)); // 显示底部图标 240*20
-
-  // 底部显示ip的区域
-  // clk.loadFont(ZdyLwFont_20); // 加载汉字字体
-  tft.setViewport(0, 222, 240, 18);
-  tft.fillScreen(TFT_BLACK); // 黑色背景
-  // IP显示
-  clk.createSprite(240, 18); // 创建Sprite
-  // clk.fillSprite(frontColor);               // 填充颜色
-  clk.setTextDatum(CL_DATUM);                 // 显示对齐方式
-  clk.setTextColor(TFT_WHITE, TFT_BLACK);     // 文本的前景色和背景色
-  clk.drawString("IP:" + local_IP, 5, 10, 2); // 显示文本
-  clk.pushSprite(0, 0);                       // Sprite中内容一次推向屏幕
-  clk.deleteSprite();                         // 删除Sprite
-  tft.resetViewport();
-
-  // clk.unloadFont(); // 卸载字体
-
-
-
-  change_color();
-
-  httpUpdater.setup(&esp8266_server);
-  /* 3. 开启http网络服务器功能 */
-  esp8266_server.begin();                    // 启动http网络服务器
-  esp8266_server.on("/", handleRoot);        // 设置请求根目录时的处理函数函数
-  esp8266_server.onNotFound(handleNotFound); // 设置无法响应时的处理函数
-
-  esp8266_server.on("/gifmode", handle_Gif_Mode); // 处理动图类型的url响应函数
-  esp8266_server.on("/restart", handle_restart);  // 处理软件复位的url响应函数
-  esp8266_server.on("/color", handle_color);      // 处理设置字体颜色的url响应函数
-  esp8266_server.on("/city", handle_citycode);    // 处理设置城市代码响应函数
+  lcdBlockTest();
+  Serial.println("LCD 测试完成");
+  while (1) { delay(1000); }
+#endif
 }
 
 void loop()
 {
 
+#ifndef ESPNOW_MODE_SENDER
+  // ===== 时钟模式循环 =====
   if (timeStatus() != timeNotSet)
   { // 已经获取到数据的话
     if (now() != prevDisplay)
@@ -1153,7 +1149,14 @@ void loop()
   mqtt_client.loop();
   // http server
   esp8266_server.handleClient();
+
+#else
+  // ===== 发送端循环：ESP-NOW 发送在 setup 中已处理，这里只做延时 =====
+  delay(10);
+#endif
 }
+
+#ifndef ESPNOW_MODE_SENDER
 
 // ============================================================
 // LCD 块颜色测试 — 图片缓存区方案（Sprite）
@@ -1230,3 +1233,5 @@ void lcdBlockTest()
   // 不会执行到这里
   block.deleteSprite();
 }
+
+#endif // !ESPNOW_MODE_SENDER

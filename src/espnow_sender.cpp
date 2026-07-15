@@ -1,13 +1,17 @@
 /**
- * ESP-NOW 图片发送端 (8×8 块)
+ * ESP-NOW 图片发送端 (8×8块 + LCD 本地显示)
  *
- * 将 240×240 RGB565 图片切分为 8×8 块，
- * 按行发送：每行 30 个块，共 30 行 = 900 包
+ * 生成渐变彩条，一边在本地 LCD 显示，一边通过 ESP-NOW 发送。
+ * 无需全图缓冲区，仅用 8×240 行缓冲区 (3840 字节)。
  */
 
 #include <ESP8266WiFi.h>
 #include <espnow.h>
+#include <TFT_eSPI.h>
 #include "espnow_img_proto.h"
+
+static TFT_eSPI *lcd = NULL;
+static TFT_eSprite *strip = NULL;   // 8×240 行缓冲区，同时用于显示和发送
 
 static volatile bool sendDone = false;
 static volatile bool sendSuccess = false;
@@ -17,7 +21,13 @@ static void onDataSent(uint8_t *mac_addr, uint8_t status) {
     sendSuccess = (status == 0);
 }
 
-void espnowSenderInit(const uint8_t *peerMac, uint8_t channel = 1) {
+void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
+    lcd = tft;
+
+    // 创建 8×240 行缓冲区
+    strip = new TFT_eSprite(lcd);
+    strip->createSprite(IMG_WIDTH, STRIP_H);  // 240 × 8
+
     WiFi.mode(WIFI_STA);
     wifi_set_channel(channel);
 
@@ -38,7 +48,6 @@ void espnowSenderInit(const uint8_t *peerMac, uint8_t channel = 1) {
 static bool sendPacket(uint8_t *data, int len) {
     sendDone = false;
     esp_now_send(NULL, data, len);
-
     unsigned long start = millis();
     while (!sendDone) {
         if (millis() - start > 100) return false;
@@ -47,13 +56,28 @@ static bool sendPacket(uint8_t *data, int len) {
     return sendSuccess;
 }
 
-void sendImage(uint16_t pixels[IMG_HEIGHT][IMG_WIDTH],
-               uint16_t imageId = 1,
-               int waitMs = 5)
-{
-    Serial.println("\n========== Sending Image ==========");
-    Serial.printf("Image ID: %u, %d strips x %d blocks = %d pkts\n",
-                  imageId, TOTAL_STRIPS, BLOCKS_PER_STRIP, TOTAL_PACKETS);
+/**
+ * 生成一条 8×240 行的渐变像素
+ * colorFn(y, x) 返回 RGB565 颜色
+ */
+static void fillStrip(uint16_t imageId, int stripIdx) {
+    int baseY = stripIdx * STRIP_H;
+    for (int py = 0; py < STRIP_H; py++) {
+        for (int px = 0; px < IMG_WIDTH; px++) {
+            int y = baseY + py;
+            int x = px;
+            // 水平 R 渐变, 垂直 G 渐变, 对角 B 渐变
+            uint8_t r = (x * 256 / IMG_WIDTH) & 0xF8;
+            uint8_t g = (y * 256 / IMG_HEIGHT) & 0xFC;
+            uint8_t b = ((x + y) * 128 / (IMG_WIDTH + IMG_HEIGHT)) & 0xF8;
+            uint16_t c = (r << 8) | (g << 3) | (b >> 3);
+            strip->drawPixel(x, py, c);
+        }
+    }
+}
+
+void sendImage(uint16_t imageId, int waitMs) {
+    Serial.printf("\n========== Sending Image #%u ==========\n", imageId);
 
     // --- START ---
     EspnowCtrlPacket startPkt;
@@ -74,24 +98,30 @@ void sendImage(uint16_t pixels[IMG_HEIGHT][IMG_WIDTH],
     int sent = 0, retries = 0;
     unsigned long t0 = millis();
 
-    for (int strip = 0; strip < TOTAL_STRIPS; strip++) {
-        for (int block = 0; block < BLOCKS_PER_STRIP; block++) {
+    for (int stripIdx = 0; stripIdx < TOTAL_STRIPS; stripIdx++) {
+        // 生成这一行的渐变像素
+        fillStrip(imageId, stripIdx);
+
+        // 推送到本地 LCD 显示
+        strip->pushSprite(0, stripIdx * STRIP_H);
+
+        // 逐块发送
+        for (int blockIdx = 0; blockIdx < BLOCKS_PER_STRIP; blockIdx++) {
             memset(&pkt, 0, sizeof(pkt));
             pkt.header.type    = PKT_IMAGE_DATA;
             pkt.header.imageId = imageId;
-            pkt.header.seq     = strip * BLOCKS_PER_STRIP + block;
+            pkt.header.seq     = stripIdx * BLOCKS_PER_STRIP + blockIdx;
             pkt.header.total   = TOTAL_PACKETS;
-            pkt.header.stripIdx = strip;
-            pkt.header.blockIdx = block;
+            pkt.header.stripIdx = stripIdx;
+            pkt.header.blockIdx = blockIdx;
             pkt.header.w       = BLOCK_W;
             pkt.header.h       = BLOCK_H;
 
-            // 拷贝 8×8 像素
+            // 从 strip 缓冲区中拷贝 8×8 像素
             int idx = 0;
             for (int py = 0; py < BLOCK_W; py++) {
                 for (int px = 0; px < BLOCK_H; px++) {
-                    uint16_t c = pixels[strip * BLOCK_W + py]
-                                        [block * BLOCK_H + px];
+                    uint16_t c = strip->readPixel(blockIdx * BLOCK_H + px, py);
                     pkt.data[idx++] = c & 0xFF;
                     pkt.data[idx++] = (c >> 8) & 0xFF;
                 }
@@ -107,8 +137,8 @@ void sendImage(uint16_t pixels[IMG_HEIGHT][IMG_WIDTH],
             delay(waitMs);
         }
         Serial.printf("[Sender] Strip %d/%d (%d%%)\n",
-                      strip + 1, TOTAL_STRIPS,
-                      (strip + 1) * 100 / TOTAL_STRIPS);
+                      stripIdx + 1, TOTAL_STRIPS,
+                      (stripIdx + 1) * 100 / TOTAL_STRIPS);
     }
 
     unsigned long elapsed = millis() - t0;

@@ -30,7 +30,7 @@ static TFT_eSprite *strip = NULL;   // 8×240 行缓冲区
 static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len);
 static void flushStrip(int stripY);
 
-void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel = 1) {
+void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     lcd = tft;
 
     strip = new TFT_eSprite(lcd);

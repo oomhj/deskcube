@@ -2,13 +2,29 @@
 #define __MAIN_H__
 
 #include <ESP8266WiFi.h>
+
+// ESP-NOW 图片传输协议（发送端和接收端都需要）
+#include "espnow_img_proto.h"
+
+// ===== 发送端 =====
+#ifdef ESPNOW_MODE_SENDER
+
+#include <TFT_eSPI.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel = 1);
+void sendImage(uint16_t imageId, int waitMs = 5);
+
+#else
+// ===== 接收端及原有时钟：需要完整库 =====
+
 #include <ESP8266HTTPClient.h>
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
 #include <TimeLib.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
-#include <TJpg_Decoder.h>
 #include <WiFiClient.h>
 #include <EEPROM.h>
 #include <ArduinoOTA.h>
@@ -16,7 +32,6 @@
 #include <PubSubClient.h>     //mqtt库
 #include <ESP8266WebServer.h> // web服务器通信库需要使用
 #include <ESP8266HTTPUpdateServer.h>
-// 无本地传感器，温湿度来自网络天气 API
 
 #include "font/ZdyLwFont_20.h" //字体头文件
 #include "font/FxLED_32.h"
@@ -126,13 +141,21 @@ String num2str(int digits);
 void sendNTPpacket(IPAddress &address);
 void lcdBlockTest();
 
-// ESP-NOW 图片传输
-void espnowSenderInit(const uint8_t *peerMac, uint8_t channel);
-void sendImage(uint16_t pixels[IMG_HEIGHT][IMG_WIDTH], uint16_t imageId, int waitMs);
+#endif // end of !ESPNOW_MODE_SENDER
 
-void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel);
+// ===== 所有模式共享的声明 =====
+
+// ESP-NOW 图片传输
+#ifndef ESPNOW_MODE_SENDER
+void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel = 1);
+void sendImage(uint16_t imageId, int waitMs = 5);
+#endif
+
+#ifndef ESPNOW_MODE_SENDER
+void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel = 1);
 bool isReceiving();
 bool isTransferComplete();
 int  getReceiveProgress();
+#endif
 
 #endif
