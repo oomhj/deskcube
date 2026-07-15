@@ -13,24 +13,25 @@ TFT_eSPI tft = TFT_eSPI();
 
 void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel = 1);
 
-// 自测模式（生成渐变彩条并发送，需编译时加 -DESPNOW_SELF_TEST）
-#ifdef ESPNOW_SELF_TEST
-void sendImage(uint16_t imageId, int waitMs = 5);
-#endif
-
-// 宿主机串口传图模式
+// 同步控制包
 bool sendStartPacket(uint16_t imageId);
 bool sendEndPacket(uint16_t imageId, int sent);
 
-// 异步双缓冲发送：
-//   recvBuf 非空时，ESP-NOW 发送期间将串口数据填入 recvBuf
-//   recvPos 输入时置 0，返回时 = 已接收字节数
-//   recvMax = 缓冲区容量
-int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels,
-                      uint8_t *recvBuf, int *recvPos, int recvMax);
+// LCD 显示（入队时调用）
+void displayStrip(int stripIdx, const uint8_t *pixels);
 
-// 兼容旧版本（同步阻塞）
-int sendStripFromHostSync(uint16_t imageId, int stripIdx, const uint8_t *pixels);
+// ===== 异步 ESP-NOW 发送（队列模式用） =====
+// beginSendStrip: 开始发送一个 strip 的所有块
+// pollSendStrip:  轮询进度，返回 0=发送中 1=完成 -1=全丢
+void beginSendStrip(uint16_t imageId, int stripIdx, const uint8_t *pixels);
+int  pollSendStrip(uint16_t imageId);
+bool isSendBusy();      // 异步发送器是否忙
+int  getSendCount();    // 最近一个 strip 的成功块数
+
+// 自测模式
+#ifdef ESPNOW_SELF_TEST
+void sendImage(uint16_t imageId, int waitMs = 5);
+#endif
 
 #endif
 
