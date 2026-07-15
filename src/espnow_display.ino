@@ -1,12 +1,9 @@
 //**********************************************************************
-// ESP-NOW 图片传输 — 发送端/接收端
+// ESP-NOW 图片传输 — 基站/接收端
 //**********************************************************************
 #include "main.h"
 
 #define VERSION "V101"
-
-// 接收端 MAC 地址（从接收端串口获取）
-#define RECEIVER_MAC  {0x8C, 0x4F, 0x00, 0x53, 0xA3, 0x18}
 
 // ===================== 接收端 =====================
 #if defined(ESPNOW_MODE_RECEIVER)
@@ -41,7 +38,35 @@ void setup()
   tft.fillScreen(TFT_BLACK);
   delay(100);
 
-  uint8_t peerMac[] = RECEIVER_MAC;
+  // 从串口读取接收端 MAC 地址
+  uint8_t peerMac[6];
+  Serial.println("Enter receiver MAC (format: XX:XX:XX:XX:XX:XX):");
+  Serial.print("> ");
+
+  int idx = 0, val = 0;
+  while (idx < 6) {
+    while (!Serial.available()) { delay(10); }
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') break;
+    if (c >= '0' && c <= '9')       val = val * 16 + (c - '0');
+    else if (c >= 'a' && c <= 'f')  val = val * 16 + (c - 'a' + 10);
+    else if (c >= 'A' && c <= 'F')  val = val * 16 + (c - 'A' + 10);
+    else if (c == ':' || c == '-') {
+      peerMac[idx++] = val;
+      val = 0;
+    }
+  }
+  if (idx < 6) {
+    // 输入不完整或超时，使用默认广播地址
+    Serial.println("\nInvalid MAC, using broadcast");
+    memset(peerMac, 0xFF, 6);
+  } else {
+    peerMac[idx] = val;
+    Serial.print("\nUsing MAC: ");
+    Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n",
+                  peerMac[0], peerMac[1], peerMac[2],
+                  peerMac[3], peerMac[4], peerMac[5]);
+  }
 
   espnowSenderInit(peerMac, &tft);
 
