@@ -70,6 +70,7 @@ static uint16_t recvLen = 0;
 static uint8_t *jpgBuf = NULL;        // malloc'd JPEG 数据缓冲区
 static int      jpgTotalSize = 0;     // JPEG 文件总字节数
 static int      jpgRecvSize = 0;      // 已接收字节数
+static unsigned long jpgRecvStart = 0; // 接收开始时间（超时用）
 static bool     jpgDecoding = false;  // 正在解码
 
 // JPEG 全局状态
@@ -261,14 +262,21 @@ void setup() {
 
             if (sLen < 2) break;
             jpgTotalSize = Serial.read() | (Serial.read() << 8);
+            if (jpgTotalSize < 64 || jpgTotalSize > 32768) {
+              Serial.printf("  ERROR: invalid JPEG size %d (64-32768)\n", jpgTotalSize);
+              break;
+            }
             jpgBuf = (uint8_t *)malloc(jpgTotalSize);
             if (!jpgBuf) {
               Serial.println("  ERROR: malloc failed for JPEG");
               break;
             }
             jpgRecvSize = 0;
+            jpgRecvStart = millis();
 
             if (sendStartPacket(g_imgId)) {
+              // 清空可能的 RGB565 队列残留
+              qHead = 0; qTail = 0;
               inImage = true; g_totalSent = 0; endPending = false;
               sState = S_JPG_RECV;
               Serial.printf("  Receiving %d bytes JPEG...\n", jpgTotalSize);
@@ -303,6 +311,14 @@ case S_DATA: {
 
       // ===== JPEG 数据接收 =====
       case S_JPG_RECV: {
+        // 超时保护：30 秒内没收齐则放弃
+        if (millis() - jpgRecvStart > 30000) {
+          Serial.printf("  ERROR: JPEG recv timeout (%d/%d bytes)\n",
+                        jpgRecvSize, jpgTotalSize);
+          if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
+          sState = S_IDLE;
+          break;
+        }
         while (jpgRecvSize < jpgTotalSize && Serial.available()) {
           jpgBuf[jpgRecvSize++] = Serial.read();
         }

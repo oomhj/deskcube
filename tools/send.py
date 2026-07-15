@@ -319,21 +319,22 @@ def main():
         sys.exit(1)
     print(f'Base station configured (port={port}, MAC={mac})')
 
-    # --- 发送图片 ---
+    # --- 解析参数 ---
     image_file = None
     use_jpeg = False
     use_raw_jpeg = False
-    if len(sys.argv) >= 4:
-        image_file = sys.argv[3]
-    elif len(sys.argv) >= 3 and os.path.isfile(sys.argv[2]):
-        image_file = sys.argv[2]
 
-    # 标志检测
-    for arg in sys.argv:
-        if arg == '--jpeg':
-            use_jpeg = True
-        if arg == '--raw-jpeg':
-            use_raw_jpeg = True
+    # 收集非标志参数
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    flags = [a for a in sys.argv[1:] if a.startswith('--')]
+
+    use_raw_jpeg = '--raw-jpeg' in flags
+    use_jpeg     = '--jpeg' in flags
+
+    for a in args:
+        if os.path.isfile(a):
+            image_file = a
+            break
 
     # 自动检测 JPEG（非 raw 模式时）
     if image_file and not use_raw_jpeg:
