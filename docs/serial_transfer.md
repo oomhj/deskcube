@@ -27,9 +27,31 @@
 
 | 命令 | 值 | payload | 说明 |
 |------|-----|---------|------|
-| `CMD_IMG_START` | `0x01` | 无 | 开始新图片 |
-| `CMD_STRIP_DATA` | `0x02` | `[stripIdx(1B)][pixels(3840B)]` | 一行像素数据 |
+| `CMD_IMG_START` | `0x01` | 无 | 开始 RGB565 图片传输 |
+| `CMD_STRIP_DATA` | `0x02` | `[stripIdx(1B)][pixels(3840B)]` | 一行 RGB565 像素数据 |
 | `CMD_IMG_END` | `0x03` | 无 | 图片传输结束 |
+| `CMD_JPG_START` | `0x10` | `[totalLen(2B)]` | 开始 JPEG 传输，总字节数 |
+| `CMD_JPG_DATA` | `0x11` | `[chunk(≤512B)]` | JPEG 数据分片 |
+
+### JPEG 传输模式
+
+宿主机将图片压缩为 JPEG（推荐 Q70，约 8KB），基站用 TJpg_Decoder 解码后走相同队列路径。
+
+**JPEG 传输流程：**
+
+```
+宿主机                              基站
+  │                                    │
+  ├─ CMD_JPG_START ──────────────────> │ malloc JPEG 缓冲区
+  │                                    │
+  ├─ CMD_JPG_DATA (分片 0..N) ───────> │ 收满 → TJpg_Decoder 解码
+  │                                    │ → 输出回调 → strip 入队 → ACK
+  │ <──────────────────────── ACK ×30  │ (每解完一条 strip 发 ACK)
+  │                                    │
+  ├─ CMD_IMG_END ────────────────────> │ 等队列排空 → ESP-NOW: END
+```
+
+JPEG 解码期间，ESP-NOW 异步发送可同时运行（队列中的 strip 会被按序发出）。
 
 ### 像素数据格式
 
