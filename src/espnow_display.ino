@@ -62,30 +62,39 @@ static bool qPop(int *stripIdx, const uint8_t **data) {
 // =====================================================================
 #include <TJpg_Decoder.h>
 
-// 16 行缓冲：适应 8×8 或 16×16 MCU，凑满一行后按 8 高 strip 切分
+// 16 行缓冲：8×8 MCU 攒 2 行再 flush，16×16 MCU 1 行即 flush
 static uint8_t jpgRowBuf[IMG_WIDTH * 16 * 2];
-static int     jpgTileH = 0;
+static int     jpgBufStartY = -1;   // 缓冲对应图片的第几行
+static uint16_t jpgRowDone = 0;     // 位图：哪些行已收齐全部列
 
 static bool tftOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap) {
-    if (jpgTileH == 0) {
-        jpgTileH = h;
+    // 新 16 行块开始
+    if (jpgBufStartY < 0) {
+        jpgBufStartY = y;
+        jpgRowDone = 0;
         memset(jpgRowBuf, 0, sizeof(jpgRowBuf));
     }
 
-    // 直接把 tile 像素拷贝到行缓冲的对应位置
+    // 拷贝 tile 像素到缓冲中的正确行
+    int bufY = y - jpgBufStartY;
     for (int row = 0; row < h; row++) {
-        memcpy(jpgRowBuf + row * IMG_WIDTH * 2 + x * 2,
+        memcpy(jpgRowBuf + (bufY + row) * IMG_WIDTH * 2 + x * 2,
                (uint8_t *)bitmap + row * w * 2, w * 2);
     }
 
-    // 最后一列 → 切分成 8 高 strip 推送到 LCD
+    // 当前 tile 列完成 → 标记这些行已收齐
     if (x + w >= IMG_WIDTH) {
-        for (int si = 0; si < h / 8; si++) {
-            int stripIdx = y / 8 + si;
-            displayStrip(stripIdx, jpgRowBuf + si * STRIP_BUFFER_BYTES);
-        }
-        // 保留剩余行（16×16 tile 的下半已处理，下一轮 tile 从新行开始）
-        jpgTileH = 0;
+        for (int row = 0; row < h; row++)
+            jpgRowDone |= (1 << (bufY + row));
+    }
+
+    // 16 行全收齐 → 拆成 2 条 8 高 strip 推送
+    if (jpgRowDone == 0xFFFF) {
+        int baseStrip = jpgBufStartY / 8;
+        for (int si = 0; si < 2; si++)
+            displayStrip(baseStrip + si, jpgRowBuf + si * STRIP_BUFFER_BYTES);
+        jpgBufStartY = -1;
+        jpgRowDone = 0;
     }
     return true;
 }
