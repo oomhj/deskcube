@@ -53,10 +53,10 @@ void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
 
 static bool sendPacket(uint8_t *data, int len) {
     sendDone = false;
-    esp_now_send(peerAddr, data, len);  // 单播，等待硬件 ACK
+    esp_now_send(peerAddr, data, len);
     unsigned long start = millis();
     while (!sendDone) {
-        if (millis() - start > 200) {   // 超时 200ms
+        if (millis() - start > 200) {
             sendSuccess = false;
             break;
         }
@@ -238,10 +238,10 @@ int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
         }
 
         bool ok = false;
-        for (int r = 0; r < 5; r++) {
+        for (int r = 0; r < 3; r++) {
             if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) { ok = true; break; }
             retries++;
-            delay(8);
+            delay(5);
         }
         if (ok) sent++;
     }

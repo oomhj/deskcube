@@ -118,7 +118,7 @@ def load_image_strips(path):
     return strips
 
 
-STRIP_ACK_TIMEOUT = float(os.environ.get('STRIP_ACK_TIMEOUT', '5.0'))
+STRIP_ACK_TIMEOUT = float(os.environ.get('STRIP_ACK_TIMEOUT', '30.0'))
 
 
 def wait_strip_ack(ser):
@@ -141,7 +141,8 @@ def send_image_via_serial(ser, strips, verbose=True):
     send_serial_packet(ser, CMD_IMG_START)
     if verbose:
         print(f'  START')
-    time.sleep(0.02)
+    # 等待基站处理 START（sendStartPacket 最多 200ms + ESP-NOW 发送）
+    time.sleep(0.5)
 
     for idx, strip_data in enumerate(strips):
         payload = bytes([idx]) + strip_data
