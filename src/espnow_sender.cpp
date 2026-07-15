@@ -3,6 +3,10 @@
  *
  * 生成渐变彩条，一边在本地 LCD 显示，一边通过 ESP-NOW 发送。
  * 无需全图缓冲区，仅用 8×240 行缓冲区 (3840 字节)。
+ *
+ * 异步双缓冲模式：
+ *   LCD 推完后立即 ACK，ESP-NOW 发送期间通过 yield 循环
+ *   同时接收下一行串口数据，串口传输被覆盖在 ESP-NOW 延迟中。
  */
 
 #include <ESP8266WiFi.h>
@@ -18,6 +22,19 @@ static uint8_t peerAddr[6];
 
 static volatile bool sendDone = false;
 static volatile bool sendSuccess = false;
+
+// ----- 异步串口接收缓冲（ESP-NOW 等待期间回填）-----
+static uint8_t *g_recvBuf = NULL;
+static int *g_recvPos = NULL;
+static int g_recvMax = 0;
+
+void setRecvBuffer(uint8_t *buf, int *pos, int max) {
+    g_recvBuf = buf; g_recvPos = pos; g_recvMax = max;
+}
+
+void clearRecvBuffer() {
+    g_recvBuf = NULL; g_recvPos = NULL; g_recvMax = 0;
+}
 
 static void onDataSent(uint8_t *mac_addr, uint8_t status) {
     sendDone = true;
@@ -42,7 +59,7 @@ void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
     // 保存对端 MAC 供 sendPacket 单播使用
     memcpy(peerAddr, peerMac, 6);
 
-    Serial.println("[Sender] ESP-NOW initialized");
+    Serial.println("[Sender] ESP-NOW initialized (async mode)");
     Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
     Serial.printf("  Peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
                   peerMac[0], peerMac[1], peerMac[2],
@@ -51,6 +68,7 @@ void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
                   BLOCK_W, BLOCK_H, BLOCK_DATA_BYTES, TOTAL_PACKETS);
 }
 
+// ----- sendPacket：发送并等待 ESP-NOW ACK，同时读取串口到接收缓冲 -----
 static bool sendPacket(uint8_t *data, int len) {
     sendDone = false;
     esp_now_send(peerAddr, data, len);
@@ -59,6 +77,11 @@ static bool sendPacket(uint8_t *data, int len) {
         if (millis() - start > 200) {
             sendSuccess = false;
             break;
+        }
+        // 在等待 ESP-NOW ACK 期间，把串口到达的数据收进异步缓冲区
+        if (g_recvBuf && g_recvPos && g_recvMax &&
+            *g_recvPos < g_recvMax && Serial.available()) {
+            g_recvBuf[(*g_recvPos)++] = Serial.read();
         }
         yield();
     }
@@ -174,7 +197,7 @@ void sendImage(uint16_t imageId, int waitMs) {
 #endif // ESPNOW_SELF_TEST
 
 // =====================================================================
-// 宿主机模式（串口接收像素数据后转发）
+// 宿主机模式 — 异步双缓冲
 // =====================================================================
 
 bool sendStartPacket(uint16_t imageId) {
@@ -196,8 +219,20 @@ bool sendEndPacket(uint16_t imageId, int sent) {
     return sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
 }
 
-int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
-    // 将像素数据填入 strip sprite（用于本地 LCD 显示）
+/**
+ * 异步发送一个 strip：
+ *   1. 将像素填入 sprite → pushSprite 到本地 LCD
+ *   2. 立即回复 ACK（宿主机同时开始发下一行）
+ *   3. ESP-NOW 逐块发送，同时通过 setRecvBuffer 接收下一行串口数据
+ *
+ * @param recvBuf  非空时，ESP-NOW 等待期间将串口数据填至此缓冲区
+ * @param recvPos  输入时置 0，返回时填入已接收的字节数
+ * @param recvMax  缓冲区容量
+ * @return 成功发送的块数
+ */
+int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels,
+                      uint8_t *recvBuf, int *recvPos, int recvMax) {
+    // ---- Phase 1: 液晶显示（立即）----
     int idx = 0;
     for (int py = 0; py < STRIP_H; py++) {
         for (int px = 0; px < IMG_WIDTH; px++) {
@@ -206,11 +241,13 @@ int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
             strip->drawPixel(px, py, c);
         }
     }
-
-    // 推送到本地 LCD
     strip->pushSprite(0, stripIdx * STRIP_H);
+    // 提前 ACK：宿主机收到后开始发下一行
+    Serial.write(0x06);
 
-    // 逐块发送
+    // ---- Phase 2: ESP-NOW 发送（与串口接收并行）----
+    setRecvBuffer(recvBuf, recvPos, recvMax);
+
     EspnowImagePacket pkt;
     int sent = 0, retries = 0;
 
@@ -246,5 +283,12 @@ int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
         if (ok) sent++;
     }
 
+    clearRecvBuffer();
     return sent;
+}
+
+// 向后兼容：无异步缓冲版本（供自测模式等调用）
+int sendStripFromHostSync(uint16_t imageId, int stripIdx, const uint8_t *pixels) {
+    int dummyPos = 0;
+    return sendStripFromHost(imageId, stripIdx, pixels, NULL, &dummyPos, 0);
 }

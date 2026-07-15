@@ -21,7 +21,16 @@ void sendImage(uint16_t imageId, int waitMs = 5);
 // 宿主机串口传图模式
 bool sendStartPacket(uint16_t imageId);
 bool sendEndPacket(uint16_t imageId, int sent);
-int  sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels);
+
+// 异步双缓冲发送：
+//   recvBuf 非空时，ESP-NOW 发送期间将串口数据填入 recvBuf
+//   recvPos 输入时置 0，返回时 = 已接收字节数
+//   recvMax = 缓冲区容量
+int sendStripFromHost(uint16_t imageId, int stripIdx, const uint8_t *pixels,
+                      uint8_t *recvBuf, int *recvPos, int recvMax);
+
+// 兼容旧版本（同步阻塞）
+int sendStripFromHostSync(uint16_t imageId, int stripIdx, const uint8_t *pixels);
 
 #endif
 
