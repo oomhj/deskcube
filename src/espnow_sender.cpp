@@ -10,7 +10,8 @@
 #include <TFT_eSPI.h>
 #include "espnow_img_proto.h"
 
-static TFT_eSPI *lcd = NULL;
+// 控制包声明需要的常量（兼容保留）
+#define TOTAL_PACKETS  900
 
 static uint8_t peerAddr[6];
 
@@ -23,8 +24,7 @@ static void onDataSent(uint8_t *mac_addr, uint8_t status) {
 }
 
 void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel) {
-    lcd = tft;
-
+    (void)tft;
     WiFi.mode(WIFI_STA);
     wifi_set_channel(channel);
 
@@ -80,14 +80,6 @@ bool sendEndPacket(uint16_t imageId, int sent) {
 }
 
 // =====================================================================
-// LCD 显示（直写 TFT，setSwapBytes 由调用者管理）
-// =====================================================================
-
-void displayStrip(int stripIdx, const uint8_t *pixels) {
-    lcd->pushImage(0, stripIdx * STRIP_H, IMG_WIDTH, STRIP_H, (uint16_t *)pixels);
-}
-
-// =====================================================================
 // ESP-NOW JPEG 文件发送
 // =====================================================================
 
@@ -132,12 +124,3 @@ bool sendJpegFile(uint16_t imageId, const uint8_t *jpgData, int jpgSize) {
     return sendPacket((uint8_t *)&endPkt, sizeof(endPkt));
 }
 
-// =====================================================================
-// 自测模式
-// =====================================================================
-#ifdef ESPNOW_SELF_TEST
-void sendImage(uint16_t imageId, int waitMs) {
-    (void)imageId; (void)waitMs;
-    Serial.println("[Sender] Self-test not available in JPEG-only mode");
-}
-#endif

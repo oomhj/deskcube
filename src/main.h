@@ -11,15 +11,9 @@ TFT_eSPI tft = TFT_eSPI();
 #ifdef ESPNOW_MODE_SENDER
 
 void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel = 1);
-
 bool sendStartPacket(uint16_t imageId);
 bool sendEndPacket(uint16_t imageId, int sent);
-void displayStrip(int stripIdx, const uint8_t *pixels);
 bool sendJpegFile(uint16_t imageId, const uint8_t *jpgData, int jpgSize);
-
-#ifdef ESPNOW_SELF_TEST
-void sendImage(uint16_t imageId, int waitMs = 5);
-#endif
 
 #endif
 
