@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  espnow-server:
+    build: .
+    container_name: espnow-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    environment:
+      - TZ=Asia/Shanghai
+    command: ["/server", "--serial", "/dev/ttyUSB0", "--port", "8080"]
