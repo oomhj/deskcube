@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP-NOW 投屏控制</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, sans-serif; background: #f5f5f5; padding: 20px; color: #333; }
+.container { max-width: 600px; margin: 0 auto; }
+.card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+h1 { font-size: 22px; margin-bottom: 4px; }
+.subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
+h2 { font-size: 16px; margin-bottom: 12px; }
+.btn { display: inline-block; padding: 10px 20px; border-radius: 8px; border: none; font-size: 15px;
+       cursor: pointer; color: #fff; background: #007aff; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-green { background: #34c759; }
+.file-label { display: block; padding: 40px 20px; border: 2px dashed #ccc; border-radius: 8px;
+              text-align: center; cursor: pointer; transition: border-color .2s; }
+.file-label:hover { border-color: #007aff; }
+.file-label input { display: none; }
+.file-label .icon { font-size: 40px; margin-bottom: 8px; }
+.file-label .text { color: #666; font-size: 14px; }
+.preview { max-width: 100%; margin-top: 12px; border-radius: 4px; display: none; }
+.status { margin-top: 12px; padding: 10px; border-radius: 6px; display: none; font-size: 14px; }
+.status.ok { display: block; background: #e8f8e8; color: #1a7d1a; }
+.status.err { display: block; background: #ffe8e8; color: #cc3333; }
+.brightness-grid { display: flex; gap: 6px; flex-wrap: wrap; }
+.brightness-grid button { flex: 1; min-width: 44px; height: 44px; border-radius: 8px; border: 1px solid #ddd;
+                          background: #fff; font-size: 14px; cursor: pointer; }
+.brightness-grid button:hover { border-color: #007aff; background: #f0f7ff; }
+.brightness-grid button.active { border-color: #007aff; background: #007aff; color: #fff; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="card">
+  <h1>🖼 ESP-NOW 投屏</h1>
+  <div class="subtitle">通过串口发送 JPEG 到基站</div>
+</div>
+
+<div class="card">
+  <h2>📤 传图</h2>
+  <label class="file-label" id="dropZone">
+    <div class="icon">📁</div>
+    <div class="text">点击选择 JPEG 文件 (240×240)</div>
+    <input type="file" accept="image/jpeg" id="fileInput">
+  </label>
+  <img class="preview" id="preview">
+  <div class="status" id="uploadStatus"></div>
+</div>
+
+<div class="card">
+  <h2>☀️ 亮度 (1-10)</h2>
+  <div class="brightness-grid" id="brightnessGrid">
+    <button onclick="setBrightness(1)">1</button>
+    <button onclick="setBrightness(2)">2</button>
+    <button onclick="setBrightness(3)">3</button>
+    <button onclick="setBrightness(4)">4</button>
+    <button onclick="setBrightness(5)">5</button>
+    <button onclick="setBrightness(6)">6</button>
+    <button onclick="setBrightness(7)">7</button>
+    <button onclick="setBrightness(8)">8</button>
+    <button onclick="setBrightness(9)">9</button>
+    <button onclick="setBrightness(10)">10</button>
+  </div>
+  <div class="status" id="brightnessStatus"></div>
+</div>
+</div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const preview = document.getElementById('preview');
+const dropZone = document.getElementById('dropZone');
+
+fileInput.addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // Show preview
+  const reader = new FileReader();
+  reader.onload = ev => { preview.src = ev.target.result; preview.style.display = 'block'; };
+  reader.readAsDataURL(file);
+
+  // Upload
+  const st = document.getElementById('uploadStatus');
+  st.className = 'status'; st.textContent = '上传中...'; st.style.display = 'block';
+
+  try {
+    const resp = await fetch('/api/upload', { method: 'POST', body: file });
+    const data = await resp.json();
+    if (resp.ok) { st.className = 'status ok'; st.textContent = '✅ 传图成功'; }
+    else { st.className = 'status err'; st.textContent = '❌ ' + (data.error || resp.statusText); }
+  } catch (e) {
+    st.className = 'status err'; st.textContent = '❌ 连接失败';
+  }
+});
+
+async function setBrightness(val) {
+  const st = document.getElementById('brightnessStatus');
+  st.className = 'status'; st.textContent = `设置亮度 ${val}...`; st.style.display = 'block';
+
+  document.querySelectorAll('#brightnessGrid button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+
+  try {
+    const resp = await fetch('/api/brightness', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value: val})
+    });
+    const data = await resp.json();
+    if (resp.ok) { st.className = 'status ok'; st.textContent = `✅ 亮度 ${val}`; }
+    else { st.className = 'status err'; st.textContent = '❌ ' + (data.error || resp.statusText); }
+  } catch (e) {
+    st.className = 'status err'; st.textContent = '❌ 连接失败';
+  }
+}
+</script>
+</body>
+</html>
