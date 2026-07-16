@@ -176,10 +176,9 @@ def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512, quality=70
 # ======================================================================
 
 def send_brightness(ser, value, verbose=True):
-    """发送亮度调节指令"""
-    value = max(0, min(100, int(value)))
-    # 指令包: [cmd_id(1)][cmd_len(1)][params...]
-    payload = bytes([0x01, 0x01, value])  # cmd=SET_BRIGHTNESS, len=1, value
+    """发送亮度调节指令（1-10 十档）"""
+    value = max(1, min(10, int(value)))
+    payload = bytes([0x01, 0x01, value])
     send_serial_packet(ser, CMD_CMD, payload)
     if verbose: print(f'Brightness set to {value}')
     return True
@@ -227,7 +226,7 @@ def main():
 
     # === 亮度指令（不配对接基站，直连串口发送）===
     if use_brightness:
-        val = 50
+        val = 10
         for f in flags:
             if f.startswith('--brightness'):
                 if '=' in f: val = int(f.split('=')[1])
