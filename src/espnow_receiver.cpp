@@ -185,7 +185,7 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
                     if (b > 100) b = 100;
                     // BL pin active LOW: 1→75% ON, 10→100% ON
                     if (b < 1) b = 1; if (b > 10) b = 10;
-                    int pwm = (10 - b) * 255 / 9;
+                    int pwm = (10 - b) * 204 / 9;
                     analogWrite(TFT_BL, pwm);
                     Serial.printf("[CMD] brightness=%d (PWM=%d)\n", b, pwm);
                     break;
