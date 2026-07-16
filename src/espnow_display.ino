@@ -164,43 +164,38 @@ void setup() {
         break;
 
       case S_JPG_RECV:
-        if (millis() - jpgRecvStart > 30000) {
-          Serial.printf("  ERROR: recv timeout (%d/%d)\n", jpgRecvSize, jpgTotalSize);
-          if (jpgBuf) { free(jpgBuf); jpgBuf = NULL; }
-          sState = S_IDLE; break;
-        }
-        // --- 帧解析 ---
+        // --- 帧解析（首次或上一 chunk 读完）---
         if (jpgChunkRemain == 0) {
-          if (Serial.available() < 4) break;  // 3B header + at least 1B payload/xr
+          if (Serial.available() < 4) { delay(1); break; }
           uint8_t c = Serial.read();
           uint16_t clen = Serial.read() | (Serial.read() << 8);
-          if (c != CMD_JPG_DATA) {
-            Serial.printf("  ERROR: expected JPG_DATA, got 0x%02X\n", c);
-            free(jpgBuf); jpgBuf = NULL; sState = S_IDLE; break;
-          }
+          if (c != CMD_JPG_DATA) { free(jpgBuf); jpgBuf = NULL; sState = S_IDLE; break; }
           int need = jpgTotalSize - jpgRecvSize;
           jpgChunkRemain = (clen < need) ? clen : need;
           jpgChunkXor = c ^ (clen & 0xFF) ^ ((clen >> 8) & 0xFF);
         }
-        // --- 读 payload 字节 ---
-        while (jpgChunkRemain > 0 && Serial.available() > 1 && jpgRecvSize < jpgTotalSize) {
-          uint8_t b = Serial.read();
-          jpgBuf[jpgRecvSize++] = b;
-          jpgChunkXor ^= b;
-          jpgChunkRemain--;
+        // --- 批量读 payload + 计算 XOR（留 1 字节给 XOR）---
+        if (jpgChunkRemain > 0 && Serial.available() > 0) {
+          int batch = Serial.available() - 1;  // 留 XOR 在缓冲区
+          if (batch > jpgChunkRemain) batch = jpgChunkRemain;
+          if (batch > 0) {
+            batch = Serial.readBytes(jpgBuf + jpgRecvSize, batch);
+            for (int i = 0; i < batch; i++) jpgChunkXor ^= jpgBuf[jpgRecvSize + i];
+            jpgRecvSize += batch;
+            jpgChunkRemain -= batch;
+          }
         }
-        // --- 校验 XOR（chunk 收完时 serial 还剩 1 字节）---
+        // --- 校验 XOR ---
         if (jpgChunkRemain == 0 && jpgRecvSize < jpgTotalSize && Serial.available() > 0) {
           uint8_t rxXor = Serial.read();
           if (rxXor != jpgChunkXor) {
-            Serial.println("  ERROR: JPG_DATA xr mismatch, aborting");
             free(jpgBuf); jpgBuf = NULL; sState = S_IDLE; break;
           }
         }
         // --- 全部收齐 ---
         if (jpgRecvSize >= jpgTotalSize) {
-          // 还有未读的 xr 字节（最后一个 chunk 读完时 xr 可能没读）
-          if (jpgChunkRemain == 0) Serial.read();  // drain trailing xr
+          // 最后一个字节恰好填满时，drain XOR
+          if (jpgChunkRemain == 0) Serial.read();
           Serial.printf("  JPEG received (%d bytes)\n", jpgRecvSize);
           if (jpgBuf) {
             tft.setSwapBytes(true);
@@ -212,6 +207,10 @@ void setup() {
           free(jpgBuf); jpgBuf = NULL;
           for (int i = 0; i < 30; i++) Serial.write(0x06);
           sState = S_IDLE;
+        }
+        // 超时保护
+        if (jpgRecvStart && millis() - jpgRecvStart > 30000) {
+          free(jpgBuf); jpgBuf = NULL; sState = S_IDLE;
         }
         break;
     }
