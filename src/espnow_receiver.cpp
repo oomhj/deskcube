@@ -65,7 +65,7 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     // 恢复亮度
     EEPROM.begin(64);
     uint8_t saved = EEPROM.read(EEPROM_BRIGHTNESS_ADDR);
-    if (saved < 1 || saved > 10) saved = 10;
+    if (saved < 1 || saved > 10) saved = 1;
     int pwm = (10 - saved) * 204 / 9;
     analogWrite(TFT_BL, pwm);
     Serial.printf("[Boot] brightness=%d\n", saved);
