@@ -53,17 +53,28 @@ def read_mac_from_receiver(port, timeout=5):
     ser.close(); return None
 
 
-def config_base(port, mac, timeout=10):
+def config_base(port, mac, timeout=15):
     """配置基站 MAC 地址"""
-    ser = serial.Serial(port, 115200, timeout=2)
-    ser.reset_input_buffer()
+    ser = serial.Serial(port, 115200, timeout=1)
+
+    # 先尝试读取已有数据（用户可能已手动复位）
+    data = ser.read(1024).decode('utf-8', errors='replace')
+
+    # 没找到 MAC 提示 → DTR 复位重试
+    if 'Enter receiver MAC' not in data and '>' not in data:
+        ser.dtr = False; time.sleep(0.3)
+        ser.dtr = True; time.sleep(2)
+        data = ser.read(1024).decode('utf-8', errors='replace')
+
+    # 轮询等待 MAC 提示
     deadline = time.time() + timeout
-    prompted = False
-    while time.time() < deadline:
-        data = ser.read(512).decode('utf-8', errors='replace')
+    prompted = ('Enter receiver MAC' in data) or ('>' in data)
+    while not prompted and time.time() < deadline:
+        data = ser.read(256).decode('utf-8', errors='replace')
         if 'Enter receiver MAC' in data or '>' in data: prompted = True; break
-        time.sleep(0.2)
+        time.sleep(0.1)
     if not prompted: ser.close(); return None
+
     ser.write(f'{mac}\n'.encode()); ser.flush(); time.sleep(2)
     resp = ser.read(4096).decode('utf-8', errors='replace')
     return ser if 'Using MAC' in resp else None
@@ -208,26 +219,29 @@ def main():
     if not mac:
         print('Error: No receiver MAC.'); print(__doc__); sys.exit(1)
 
-    # --- 配置基站 ---
-    ser = config_base(port, mac)
-    if not ser: print('Failed to configure base station'); sys.exit(1)
-    print(f'Base station configured (port={port}, MAC={mac})')
-
     # --- 解析参数 ---
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     flags = [a for a in sys.argv[1:] if a.startswith('--')]
     use_raw_jpeg = '--raw-jpeg' in flags
-    use_brightness = '--brightness' in flags
+    use_brightness = any(f.startswith('--brightness') for f in flags)
 
-    # --- 亮度指令 ---
+    # === 亮度指令（不配对接基站，直连串口发送）===
     if use_brightness:
-        val = 0
+        val = 50
         for f in flags:
-            if f.startswith('--brightness='):
-                val = int(f.split('=')[1])
+            if f.startswith('--brightness'):
+                if '=' in f: val = int(f.split('=')[1])
                 break
+        ser = serial.Serial(port, 115200, timeout=2)
+        ser.reset_input_buffer()
+        time.sleep(0.3)
         send_brightness(ser, val)
         ser.close(); return
+
+    # --- 配置基站 ---
+    ser = config_base(port, mac)
+    if not ser: print('Failed to configure base station'); sys.exit(1)
+    print(f'Base station configured (port={port}, MAC={mac})')
 
     image_file = None
     for a in args:
