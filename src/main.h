@@ -14,6 +14,7 @@ void espnowSenderInit(const uint8_t *peerMac, TFT_eSPI *tft, uint8_t channel = 1
 bool sendStartPacket(uint16_t imageId);
 bool sendEndPacket(uint16_t imageId, int sent);
 bool sendJpegFile(uint16_t imageId, const uint8_t *jpgData, int jpgSize);
+bool sendCmdPacket(uint16_t imageId, uint8_t cmdId, const uint8_t *params, uint8_t len);
 
 #endif
 

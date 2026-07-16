@@ -175,6 +175,28 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
             break;
         }
 
+        case PKT_CMD: {
+            if (len < sizeof(EspnowCmdPacket)) return;
+            EspnowCmdPacket *cpkt = (EspnowCmdPacket *)data;
+            switch (cpkt->cmd) {
+                case CMD_SET_BRIGHTNESS: {
+                    if (cpkt->len < 1) break;
+                    uint8_t b = cpkt->params[0];
+                    if (b > 100) b = 100;
+                    // BL pin active LOW: 100 → PWM 0 (fully on)
+                    //                 0  → PWM 1023 (off)
+                    int pwm = (100 - b) * 1023 / 100;
+                    analogWrite(TFT_BL, pwm);
+                    Serial.printf("[CMD] brightness=%d (PWM=%d)\n", b, pwm);
+                    break;
+                }
+                default:
+                    Serial.printf("[CMD] unknown cmd: 0x%02X\n", cpkt->cmd);
+                    break;
+            }
+            break;
+        }
+
         default:
             Serial.printf("[Receiver] Unknown type: 0x%02X\n", hdr->type);
             break;

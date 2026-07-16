@@ -80,6 +80,26 @@ bool sendEndPacket(uint16_t imageId, int sent) {
 }
 
 // =====================================================================
+// ESP-NOW 指令发送
+// =====================================================================
+
+bool sendCmdPacket(uint16_t imageId, uint8_t cmdId, const uint8_t *params, uint8_t len) {
+    if (len > CMD_MAX_PARAMS) len = CMD_MAX_PARAMS;
+    EspnowCmdPacket pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    pkt.header.type    = PKT_CMD;
+    pkt.header.imageId = imageId;
+    pkt.cmd            = cmdId;
+    pkt.len            = len;
+    if (len > 0) memcpy(pkt.params, params, len);
+    for (int r = 0; r < 3; r++) {
+        if (sendPacket((uint8_t *)&pkt, sizeof(pkt))) return true;
+        delay(5);
+    }
+    return false;
+}
+
+// =====================================================================
 // ESP-NOW JPEG 文件发送
 // =====================================================================
 

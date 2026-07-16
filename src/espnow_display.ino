@@ -19,7 +19,8 @@ void loop() { delay(10); }
 #elif defined(ESPNOW_MODE_SENDER)
 
 enum { CMD_IMG_START = 0x01, CMD_IMG_END = 0x03,
-       CMD_JPG_START = 0x10, CMD_JPG_DATA = 0x11 };
+       CMD_JPG_START = 0x10, CMD_JPG_DATA = 0x11,
+       CMD_CMD       = 0x20 };
 
 // 串口协议: [cmd][len_lo][len_hi][payload...][xr]
 static void drainSerial(uint16_t len) {
@@ -138,6 +139,20 @@ void setup() {
               inImage = true; g_totalSent = 0; sState = S_JPG_RECV;
               Serial.printf("  Receiving %d bytes JPEG...\n", jpgTotalSize);
             } else { free(jpgBuf); jpgBuf = NULL; }
+            break;
+          }
+
+          case CMD_CMD: {
+            if (sLen < 2) { drainSerial(sLen); break; }
+            uint8_t cmdId = Serial.read();
+            uint8_t cmdLen = Serial.read();
+            uint8_t cmdParams[CMD_MAX_PARAMS];
+            uint8_t plen = (cmdLen < CMD_MAX_PARAMS) ? cmdLen : CMD_MAX_PARAMS;
+            for (int i = 0; i < plen; i++) cmdParams[i] = Serial.read();
+            // drain remaining params + xor byte
+            for (int i = plen; i < cmdLen + 1; i++) Serial.read();
+            sendCmdPacket(g_imgId, cmdId, cmdParams, plen);
+            Serial.println("  CMD sent");
             break;
           }
 

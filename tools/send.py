@@ -24,6 +24,7 @@ CMD_IMG_START  = 0x01
 CMD_IMG_END    = 0x03
 CMD_JPG_START  = 0x10
 CMD_JPG_DATA   = 0x11
+CMD_CMD        = 0x20
 
 IMG_WIDTH   = 240
 IMG_HEIGHT  = 240
@@ -160,6 +161,20 @@ def send_jpeg_via_serial(ser, jpg_path, verbose=True, chunk_size=512, quality=70
 
 
 # ======================================================================
+# 指令发送
+# ======================================================================
+
+def send_brightness(ser, value, verbose=True):
+    """发送亮度调节指令"""
+    value = max(0, min(100, int(value)))
+    # 指令包: [cmd_id(1)][cmd_len(1)][params...]
+    payload = bytes([0x01, 0x01, value])  # cmd=SET_BRIGHTNESS, len=1, value
+    send_serial_packet(ser, CMD_CMD, payload)
+    if verbose: print(f'Brightness set to {value}')
+    return True
+
+
+# ======================================================================
 # 主逻辑
 # ======================================================================
 
@@ -202,6 +217,17 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     flags = [a for a in sys.argv[1:] if a.startswith('--')]
     use_raw_jpeg = '--raw-jpeg' in flags
+    use_brightness = '--brightness' in flags
+
+    # --- 亮度指令 ---
+    if use_brightness:
+        val = 0
+        for f in flags:
+            if f.startswith('--brightness='):
+                val = int(f.split('=')[1])
+                break
+        send_brightness(ser, val)
+        ser.close(); return
 
     image_file = None
     for a in args:

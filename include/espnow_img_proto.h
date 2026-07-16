@@ -36,7 +36,14 @@ enum PacketType : uint8_t {
     PKT_JPG_START   = 0x10,
     PKT_JPG_DATA    = 0x11,
     PKT_JPG_END     = 0x12,
+    PKT_CMD         = 0x20,
 };
+
+// ---------- 指令 ID ----------
+enum CmdId : uint8_t {
+    CMD_SET_BRIGHTNESS = 0x01,
+};
+#define CMD_MAX_PARAMS  4
 
 // ---------- 数据结构 ----------
 #pragma pack(push, 1)
@@ -62,6 +69,14 @@ struct EspnowJpgPacket {
 struct EspnowCtrlPacket {
     EspnowPacketHeader header;
     uint16_t param;
+};
+
+// 指令包: 11B 头 + cmd(1) + len(1) + params(0~4)
+struct EspnowCmdPacket {
+    EspnowPacketHeader header;
+    uint8_t  cmd;
+    uint8_t  len;
+    uint8_t  params[CMD_MAX_PARAMS];
 };
 
 #pragma pack(pop)
