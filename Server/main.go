@@ -51,6 +51,7 @@ func main() {
 	// API routes
 	http.HandleFunc("/api/upload", h.Upload)
 	http.HandleFunc("/api/brightness", h.Brightness)
+	http.HandleFunc("/api/macs", h.MACs)
 
 	// Static files
 	staticFS, _ := fs.Sub(staticFiles, "static")

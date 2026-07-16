@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"go.bug.st/serial"
@@ -48,8 +49,10 @@ func Packet(cmd byte, payload []byte) []byte {
 
 // Station manages serial connection to the base station.
 type Station struct {
-	port    serial.Port
-	timeout time.Duration
+	port       serial.Port
+	portName   string
+	timeout    time.Duration
+	ReceiverMAC string
 }
 
 // Open connects to the base station via serial port.
@@ -65,9 +68,55 @@ func Open(portName string) (*Station, error) {
 		return nil, fmt.Errorf("open serial %s: %w", portName, err)
 	}
 	port.SetReadTimeout(1 * time.Second)
-	time.Sleep(500 * time.Millisecond) // let ESP boot
-	return &Station{port: port, timeout: defaultTimeout}, nil
+	// DTR reset for clean state
+	port.SetDTR(false)
+	time.Sleep(300 * time.Millisecond)
+	port.SetDTR(true)
+	time.Sleep(2 * time.Second)
+	port.ResetInputBuffer()
+	return &Station{port: port, portName: portName, timeout: defaultTimeout}, nil
 }
+
+// SetReceiver resets the base station and sets the receiver MAC.
+func (s *Station) SetReceiver(mac string) error {
+	// DTR reset to get MAC prompt
+	s.port.SetDTR(false)
+	time.Sleep(300 * time.Millisecond)
+	s.port.SetDTR(true)
+	s.port.ResetInputBuffer()
+	time.Sleep(2 * time.Second)
+
+	// Read until MAC prompt
+	buf := make([]byte, 512)
+	deadline := time.Now().Add(10 * time.Second)
+	prompted := false
+	for time.Now().Before(deadline) {
+		n, _ := s.port.Read(buf)
+		if n > 0 {
+			text := string(buf[:n])
+			if strings.Contains(text, "Enter receiver MAC") || strings.Contains(text, ">") {
+				prompted = true
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !prompted {
+		return errors.New("no MAC prompt from base station")
+	}
+	// Send MAC
+	s.port.Write([]byte(mac + "\n"))
+	time.Sleep(2 * time.Second)
+	// Verify
+	n, _ := s.port.Read(buf)
+	if !strings.Contains(string(buf[:n]), "Using MAC") {
+		return errors.New("MAC not accepted")
+	}
+	s.ReceiverMAC = mac
+	return nil
+}
+
+func (s *Station) GetReceiver() string { return s.ReceiverMAC }
 
 // Close closes the serial connection.
 func (s *Station) Close() error { return s.port.Close() }

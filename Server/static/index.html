@@ -41,6 +41,15 @@ h2 { font-size: 16px; margin-bottom: 12px; }
 </div>
 
 <div class="card">
+  <h2>📡 接收机</h2>
+  <select id="receiverSelect" style="width:100%;padding:10px;border-radius:8px;border:1px solid #ddd;font-size:15px;">
+    <option value="8C:4F:00:53:A3:18">接收机 1 (8C:4F:00:53:A3:18)</option>
+    <option value="EC:64:C9:C9:37:0C">接收机 2 (EC:64:C9:C9:37:0C)</option>
+  </select>
+  <div class="status" id="macStatus"></div>
+</div>
+
+<div class="card">
   <h2>📤 传图</h2>
   <label class="file-label" id="dropZone">
     <div class="icon">📁</div>
@@ -70,6 +79,26 @@ h2 { font-size: 16px; margin-bottom: 12px; }
 </div>
 
 <script>
+// --- 接收机 MAC ---
+const macSel = document.getElementById('receiverSelect');
+const macSt = document.getElementById('macStatus');
+
+async function loadMAC() {
+  const r = await fetch('/api/macs');
+  const d = await r.json();
+  macSel.value = d.active || '';
+}
+async function setMAC(mac) {
+  macSt.className = 'status'; macSt.textContent = '设置中...'; macSt.style.display = 'block';
+  try {
+    const r = await fetch('/api/macs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({mac}) });
+    if (r.ok) { macSt.className = 'status ok'; macSt.textContent = '✅ 接收机已切换'; }
+    else { const d = await r.json(); macSt.className = 'status err'; macSt.textContent = '❌ ' + (d.error||''); }
+  } catch(e) { macSt.className = 'status err'; macSt.textContent = '❌ 连接失败'; }
+}
+macSel.addEventListener('change', () => setMAC(macSel.value));
+loadMAC();
+
 const fileInput = document.getElementById('fileInput');
 const preview = document.getElementById('preview');
 const dropZone = document.getElementById('dropZone');

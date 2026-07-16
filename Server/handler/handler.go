@@ -9,11 +9,35 @@ import (
 type StationProvider interface {
 	SendJpeg(data []byte) error
 	SendBrightness(value int) error
+	SetReceiver(mac string) error
+	GetReceiver() string
 }
 
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
 	Station StationProvider
+}
+
+// MACs returns known receiver MACs and the active one.
+// GET /api/macs
+func (h *Handler) MACs(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req struct {
+			MAC string `json:"mac"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		if err := h.Station.SetReceiver(req.MAC); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"active": h.Station.GetReceiver(),
+		"known":  []string{"8C:4F:00:53:A3:18", "EC:64:C9:C9:37:0C"},
+	})
 }
 
 func New(station StationProvider) *Handler {
