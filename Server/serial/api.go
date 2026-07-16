@@ -68,10 +68,12 @@ func Open(portName string) (*Station, error) {
 		return nil, fmt.Errorf("open serial %s: %w", portName, err)
 	}
 	port.SetReadTimeout(1 * time.Second)
-	// DTR reset for clean state
-	port.SetDTR(false)
+	// NodeMCU: RTS→RST (复位), DTR→GPIO0 (启动模式)
+	// RTS high → RST low → 复位; RTS low → RST high → 运行
+	port.SetRTS(true)   // 复位
+	port.SetDTR(false)  // GPIO0 high → 正常启动
 	time.Sleep(300 * time.Millisecond)
-	port.SetDTR(true)
+	port.SetRTS(false)  // 释放复位
 	time.Sleep(2 * time.Second)
 	port.ResetInputBuffer()
 	return &Station{port: port, portName: portName, timeout: defaultTimeout}, nil
@@ -79,10 +81,11 @@ func Open(portName string) (*Station, error) {
 
 // SetReceiver resets the base station and sets the receiver MAC.
 func (s *Station) SetReceiver(mac string) error {
-	// DTR reset to get MAC prompt
-	s.port.SetDTR(false)
+	// NodeMCU: RTS→RST, DTR→GPIO0
+	s.port.SetRTS(true)   // 复位
+	s.port.SetDTR(false)  // GPIO0 high → 正常启动
 	time.Sleep(300 * time.Millisecond)
-	s.port.SetDTR(true)
+	s.port.SetRTS(false)  // 释放复位
 	s.port.ResetInputBuffer()
 	time.Sleep(2 * time.Second)
 
@@ -120,6 +123,20 @@ func (s *Station) GetReceiver() string { return s.ReceiverMAC }
 
 // Close closes the serial connection.
 func (s *Station) Close() error { return s.port.Close() }
+
+// PortName returns the current port name.
+func (s *Station) PortName() string { return s.portName }
+
+// Reopen closes the current connection and opens a new serial port.
+func (s *Station) Reopen(portName string) error {
+	s.port.Close()
+	newStation, err := Open(portName)
+	if err != nil {
+		return err
+	}
+	*s = *newStation
+	return nil
+}
 
 // write sends a serial packet.
 func (s *Station) write(cmd byte, payload []byte) error {
@@ -181,6 +198,7 @@ func (s *Station) SendJpeg(data []byte) error {
 }
 
 // SendBrightness sends a brightness command (1-10).
+// Note: firmware does not send ACK for command packets.
 func (s *Station) SendBrightness(value int) error {
 	if value < 1 || value > 10 {
 		return errors.New("brightness must be 1-10")
@@ -189,8 +207,7 @@ func (s *Station) SendBrightness(value int) error {
 	if err := s.write(CmdCmd, payload); err != nil {
 		return fmt.Errorf("cmd: %w", err)
 	}
-	// Expect 1 ACK
-	return s.readAck(1)
+	return nil
 }
 
 // ListPorts returns available serial ports.
@@ -200,4 +217,13 @@ func ListPorts() ([]string, error) {
 		return nil, err
 	}
 	return ports, nil
+}
+
+// RefreshPorts returns available serial ports and the currently connected one.
+func (s *Station) RefreshPorts() ([]string, string, error) {
+	ports, err := serial.GetPortsList()
+	if err != nil {
+		return nil, "", err
+	}
+	return ports, s.portName, nil
 }

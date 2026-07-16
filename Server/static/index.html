@@ -11,11 +11,14 @@ body { font-family: -apple-system, sans-serif; background: #f5f5f5; padding: 20p
 .card { background: #fff; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
 h1 { font-size: 22px; margin-bottom: 4px; }
 .subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
-h2 { font-size: 16px; margin-bottom: 12px; }
+h2 { font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .btn { display: inline-block; padding: 10px 20px; border-radius: 8px; border: none; font-size: 15px;
        cursor: pointer; color: #fff; background: #007aff; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn-green { background: #34c759; }
+.btn-sm { padding: 6px 12px; font-size: 13px; }
+.btn-refresh { background: #5856d6; }
+.port-row { display: flex; gap: 8px; align-items: center; }
 .file-label { display: block; padding: 40px 20px; border: 2px dashed #ccc; border-radius: 8px;
               text-align: center; cursor: pointer; transition: border-color .2s; }
 .file-label:hover { border-color: #007aff; }
@@ -38,6 +41,17 @@ h2 { font-size: 16px; margin-bottom: 12px; }
 <div class="card">
   <h1>🖼 ESP-NOW 投屏</h1>
   <div class="subtitle">通过串口发送 JPEG 到基站</div>
+</div>
+
+<div class="card">
+  <h2>🔌 串口</h2>
+  <div class="port-row">
+    <select id="portSelect" style="flex:1;padding:10px;border-radius:8px;border:1px solid #ddd;font-size:15px;">
+      <option value="">加载中...</option>
+    </select>
+    <button class="btn btn-sm btn-refresh" onclick="refreshPorts()">🔄</button>
+  </div>
+  <div class="status" id="portStatus"></div>
 </div>
 
 <div class="card">
@@ -79,6 +93,57 @@ h2 { font-size: 16px; margin-bottom: 12px; }
 </div>
 
 <script>
+// --- 串口选择 ---
+const portSel = document.getElementById('portSelect');
+const portSt = document.getElementById('portStatus');
+
+async function refreshPorts() {
+  portSt.className = 'status'; portSt.textContent = '刷新中...'; portSt.style.display = 'block';
+  try {
+    const r = await fetch('/api/ports');
+    const d = await r.json();
+    portSel.innerHTML = '';
+    if (d.ports && d.ports.length > 0) {
+      for (const p of d.ports) {
+        const opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = p;
+        if (p === d.active) opt.selected = true;
+        portSel.appendChild(opt);
+      }
+      portSt.className = 'status ok';
+      portSt.textContent = `✅ 发现 ${d.ports.length} 个串口`;
+    } else {
+      portSel.innerHTML = '<option value="">未找到串口</option>';
+      portSt.className = 'status err';
+      portSt.textContent = '⚠️ 未找到可用串口';
+    }
+  } catch(e) {
+    portSt.className = 'status err';
+    portSt.textContent = '❌ 刷新失败';
+  }
+}
+
+async function switchPort(port) {
+  portSt.className = 'status'; portSt.textContent = `切换到 ${port}...`; portSt.style.display = 'block';
+  try {
+    const r = await fetch('/api/ports', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({port}) });
+    if (r.ok) {
+      portSt.className = 'status ok';
+      portSt.textContent = `✅ 串口已切换至 ${port}`;
+    } else {
+      const d = await r.json();
+      portSt.className = 'status err';
+      portSt.textContent = '❌ ' + (d.error || '切换失败');
+    }
+  } catch(e) {
+    portSt.className = 'status err';
+    portSt.textContent = '❌ 连接失败';
+  }
+}
+portSel.addEventListener('change', () => switchPort(portSel.value));
+refreshPorts();
+
 // --- 接收机 MAC ---
 const macSel = document.getElementById('receiverSelect');
 const macSt = document.getElementById('macStatus');

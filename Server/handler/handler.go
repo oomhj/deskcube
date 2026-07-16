@@ -11,6 +11,9 @@ type StationProvider interface {
 	SendBrightness(value int) error
 	SetReceiver(mac string) error
 	GetReceiver() string
+	PortName() string
+	Reopen(portName string) error
+	RefreshPorts() ([]string, string, error)
 }
 
 // Handler holds dependencies for HTTP handlers.
@@ -38,6 +41,43 @@ func (h *Handler) MACs(w http.ResponseWriter, r *http.Request) {
 		"active": h.Station.GetReceiver(),
 		"known":  []string{"8C:4F:00:53:A3:18", "EC:64:C9:C9:37:0C"},
 	})
+}
+
+// Ports returns available serial ports and current port.
+// GET /api/ports - list ports
+// POST /api/ports - switch to new port
+func (h *Handler) Ports(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		ports, current, err := h.Station.RefreshPorts()
+		if err != nil {
+			http.Error(w, "list ports: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ports":  ports,
+			"active": current,
+		})
+		return
+	}
+	if r.Method == http.MethodPost {
+		var req struct {
+			Port string `json:"port"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		if req.Port == "" {
+			http.Error(w, "port is required", http.StatusBadRequest)
+			return
+		}
+		if err := h.Station.Reopen(req.Port); err != nil {
+			http.Error(w, "switch port: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "port": req.Port})
+	}
 }
 
 func New(station StationProvider) *Handler {

@@ -6,3 +6,8 @@
 lib/
 .DS_Store
 .vscode/
+
+# Compiled binaries
+Server/server-linux-x64
+Server/server-darwin-arm64
+Server/cmd/brightness/brightness

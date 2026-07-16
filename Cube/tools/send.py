@@ -41,8 +41,10 @@ STRIP_ACK_TIMEOUT = float(os.environ.get('STRIP_ACK_TIMEOUT', '30.0'))
 def read_mac_from_receiver(port, timeout=5):
     """复位接收端，读取 MAC 地址"""
     ser = serial.Serial(port, 115200, timeout=2)
-    ser.dtr = False; time.sleep(0.3)
-    ser.dtr = True; ser.reset_input_buffer()
+    # NodeMCU: RTS→RST, DTR→GPIO0
+    ser.rts = True; ser.dtr = False  # 复位 + 正常启动模式
+    time.sleep(0.3)
+    ser.rts = False; ser.reset_input_buffer()  # 释放复位
     deadline = time.time() + timeout
     while time.time() < deadline:
         line = ser.readline().decode('utf-8', errors='replace').strip()
@@ -60,10 +62,12 @@ def config_base(port, mac, timeout=15):
     # 先尝试读取已有数据（用户可能已手动复位）
     data = ser.read(1024).decode('utf-8', errors='replace')
 
-    # 没找到 MAC 提示 → DTR 复位重试
+    # 没找到 MAC 提示 → RTS 复位重试
     if 'Enter receiver MAC' not in data and '>' not in data:
-        ser.dtr = False; time.sleep(0.3)
-        ser.dtr = True; time.sleep(2)
+        ser.rts = True; ser.dtr = False  # RST low + GPIO0 high
+        time.sleep(0.3)
+        ser.rts = False  # 释放复位
+        time.sleep(2)
         data = ser.read(1024).decode('utf-8', errors='replace')
 
     # 轮询等待 MAC 提示
