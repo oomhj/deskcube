@@ -8,8 +8,11 @@
 #include <espnow.h>
 #include <TFT_eSPI.h>
 #include <TJpg_Decoder.h>
+#include <EEPROM.h>
 #include "espnow_img_proto.h"
 #include "jpeg_render.h"
+
+#define EEPROM_BRIGHTNESS_ADDR  0
 
 // =====================================================================
 // 接收状态
@@ -58,6 +61,14 @@ void espnowReceiverInit(TFT_eSPI *tft, uint8_t channel) {
     esp_now_init();
     esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
     esp_now_register_recv_cb(onDataRecv);
+
+    // 恢复亮度
+    EEPROM.begin(64);
+    uint8_t saved = EEPROM.read(EEPROM_BRIGHTNESS_ADDR);
+    if (saved < 1 || saved > 10) saved = 10;
+    int pwm = (10 - saved) * 204 / 9;
+    analogWrite(TFT_BL, pwm);
+    Serial.printf("[Boot] brightness=%d\n", saved);
 
     Serial.println("[Receiver] ESP-NOW ready (JPEG mode)");
     Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
@@ -186,7 +197,9 @@ static void onDataRecv(uint8_t *mac, uint8_t *data, uint8_t len) {
                     // BL pin active LOW: 1→80% ON, 10→100% ON
                     int pwm = (10 - b) * 204 / 9;
                     analogWrite(TFT_BL, pwm);
-                    Serial.printf("[CMD] brightness=%d (PWM=%d)\n", b, pwm);
+                    EEPROM.write(EEPROM_BRIGHTNESS_ADDR, b);
+                    EEPROM.commit();
+                    Serial.printf("[CMD] brightness=%d\n", b);
                     break;
                 }
                 default:

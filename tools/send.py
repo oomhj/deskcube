@@ -224,23 +224,20 @@ def main():
     use_raw_jpeg = '--raw-jpeg' in flags
     use_brightness = any(f.startswith('--brightness') for f in flags)
 
-    # === 亮度指令（不配对接基站，直连串口发送）===
+    # --- 配置基站 ---
+    ser = config_base(port, mac)
+    if not ser: print('Failed to configure base station'); sys.exit(1)
+    print(f'Base station configured (port={port}, MAC={mac})')
+
+    # === 亮度指令 ===
     if use_brightness:
         val = 10
         for f in flags:
             if f.startswith('--brightness'):
                 if '=' in f: val = int(f.split('=')[1])
                 break
-        ser = serial.Serial(port, 115200, timeout=2)
-        ser.reset_input_buffer()
-        time.sleep(0.3)
         send_brightness(ser, val)
         ser.close(); return
-
-    # --- 配置基站 ---
-    ser = config_base(port, mac)
-    if not ser: print('Failed to configure base station'); sys.exit(1)
-    print(f'Base station configured (port={port}, MAC={mac})')
 
     image_file = None
     for a in args:
