@@ -1,84 +1,92 @@
-# JPEG 串口传图 + ESP-NOW 投屏设计
+# 架构设计
 
-## 架构
+## 系统架构
 
 ```
-宿主机                              基站
-  │                                    │
-  │  ── 串口 (XOR 校验) ──            │
-  ├─ CMD_JPG_START                    │ malloc(jpgBuf)
-  ├─ CMD_JPG_DATA ×N                  │ 逐字节收齐
-  │                                    │
-  │  ── 解码 + 显示 ──                │
-  │                                    │ drawJpg(jpgBuf) → LCD
-  │                                    │   ├─ setSwapBytes(true)
-  │                                    │   └─ tft.pushImage 逐 tile
-  │                                    │
-  │  ── ESP-NOW 转发 ──               │
-  │                                    │ sendJpegFile(jpgBuf)
-  │                                    │   ├─ PKT_JPG_START
-  │                                    │   ├─ PKT_JPG_DATA ×N
-  │                                    │   │  每包 3 次重试
-  │                                    │   └─ PKT_JPG_END
-  │                                    │
-  │ <────────────────────────── 30 ACK │
-  │                                    │
-  ├─ CMD_IMG_END ────────────────────> │ sendEndPacket()
-  │                                    │ → PKT_IMAGE_END
+┌──────────┐  USB Serial   ┌──────────┐  ESP-NOW   ┌──────────┐
+│ 宿主机    │ ────────────> │  基站     │ ──────────> │  接收机   │
+│ send.py   │ 115200 XOR   │ ESP8266  │  239B/pkt   │ ESP8266  │
+│           │ JPEG + 指令  │ LCD 显示 │  3 次重试   │ LCD 显示 │
+└──────────┘               └──────────┘             └──────────┘
+                                                     │
+                                                EEPROM 亮度保存
+                                                GPIO5 PWM 背光
 ```
 
 ## 串口协议
 
-| 字段 | 大小 | 说明 |
-|------|------|------|
-| cmd | 1B | 命令字 |
-| len | 2B | payload 长度（小端） |
-| payload | len B | 数据 |
-| xor | 1B | XOR 校验和 |
+| 命令 | 值 | 用途 |
+|------|-----|------|
+| `CMD_JPG_START` | 0x10 | JPEG 文件开始 |
+| `CMD_JPG_DATA` | 0x11 | JPEG 数据分片 |
+| `CMD_CMD` | 0x20 | 指令转发 |
 
-XOR = cmd ^ len_lo ^ len_hi ^ payload[0] ^ payload[1] ^ ...
+所有包带 1 字节 XOR 校验和。
 
 ## ESP-NOW 协议
 
-| 包类型 | 值 | 数据 | 说明 |
-|--------|-----|------|------|
-| `PKT_JPG_START` | 0x10 | header + param=总字节数 | JPEG 开始 |
-| `PKT_JPG_DATA` | 0x11 | header + 239B JPEG 数据 | JPEG 分片 |
-| `PKT_JPG_END` | 0x12 | header | JPEG 结束 |
+### 投屏帧
+
+| 包类型 | 值 | 说明 |
+|--------|-----|------|
+| `PKT_JPG_START` | 0x10 | JPEG 开始，param=总字节数 |
+| `PKT_JPG_DATA` | 0x11 | 239B 分片，seq=序号 |
+| `PKT_JPG_END` | 0x12 | JPEG 结束 |
+
+### 指令帧
+
+| 包类型 | 值 | 说明 |
+|--------|-----|------|
+| `PKT_CMD` | 0x20 | 指令帧 |
+
+指令帧结构：
+
+```
+┌───────────┬──────┬─────┬──────────┐
+│  header   │ cmd  │ len │  params  │
+│  11B      │ 1B   │ 1B  │  up to 4 │
+└───────────┴──────┴─────┴──────────┘
+```
+
+### 支持指令
+
+| cmdId | 命令 | 参数 | 说明 |
+|-------|------|------|------|
+| `0x01` | 设置亮度 | `[brightness(1B)]` | 1~10 |
+
+## 接收机亮度控制
+
+- GPIO5（NPN 三极管驱动背光）
+- Active LOW：`analogWrite(0)` = 最亮，`analogWrite(1023)` = 灭
+- 80%~100% PWM 范围（基于实测校准）
+- 值存入 EEPROM，开机自动恢复
 
 ## 安全措施
 
 - JPEG 大小限制 64~32768 字节
-- 串口 XOR 校验和，校验失败丢弃包
+- 串口 XOR 校验和，校验失败丢弃
 - S_JPG_RECV 30 秒超时保护
 - ESP-NOW 每包 3 次重试
-- 接收机 JPEG 分片去重（jpgChunkSeen 位图）
+- 接收机 JPEG 分片去重（位图）
 - malloc 失败回退 S_IDLE
 
-## 内存布局
+## 性能
 
-```
-基站 RAM:
-  jpgBuf (heap)       ~8000   JPEG 文件 (malloc/free)
-  Serial RX           =4096   硬件串口缓冲
-  TJpg work (heap)    ~3100   解码器工作区
-  TFT + 其他          ~28000
-
-接收机 RAM:
-  jpgRecvBuf (heap)   ~8000   JPEG 文件 (malloc/free)
-  Serial RX           =4096   硬件串口缓冲
-  TJpg work (heap)    ~3100   解码器工作区
-  TFT + 其他          ~28000
-```
+| 测试项 | 结果 |
+|--------|------|
+| 串口传输 6.5KB (115200) | ~0.6s |
+| 基站解码 + LCD | ~0.5s |
+| ESP-NOW 转发 27 包 | ~0.3s |
+| 接收机解码 + LCD | ~0.5s |
+| **整图** | **~2s** |
 
 ## 文件
 
-| 文件 | 职责 |
-|------|------|
-| `src/espnow_display.ino` | 基站串口状态机 + JPEG 渲染 |
-| `src/espnow_sender.cpp` | ESP-NOW 发送（控制包 + JPEG） |
-| `src/espnow_receiver.cpp` | 接收端 JPEG 重组 + 渲染 |
-| `include/espnow_img_proto.h` | 协议常量和数据结构 |
-| `include/jpeg_render.h` | 共享渲染回调 |
-| `include/main.h` | 函数声明 |
-| `tools/send.py` | 宿主机工具 |
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `espnow_display.ino` | 217 | 基站状态机 + JPEG 渲染 |
+| `espnow_sender.cpp` | 126 | ESP-NOW 发送 |
+| `espnow_receiver.cpp` | 220 | 接收机 JPEG + 指令 + EEPROM |
+| `espnow_img_proto.h` | 80 | 协议定义 |
+| `jpeg_render.h` | 16 | 共享渲染回调 |
+| `send.py` | 243 | 宿主机工具 |
