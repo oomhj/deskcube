@@ -113,8 +113,10 @@ async function refreshPorts() {
         if (p === d.active) opt.selected = true;
         portSel.appendChild(opt);
       }
-      portSt.className = 'status ok';
-      portSt.textContent = `✅ 发现 ${d.ports.length} 个串口`;
+      const statusIcon = d.connected ? '✅' : '⛔';
+      const statusText = d.connected ? `已连接 ${d.active}` : '未连接';
+      portSt.className = 'status ' + (d.connected ? 'ok' : 'err');
+      portSt.textContent = `${statusIcon} ${statusText}（发现 ${d.ports.length} 个串口）`;
     } else {
       portSel.innerHTML = '<option value="">未找到串口</option>';
       portSt.className = 'status err';
@@ -147,8 +149,16 @@ async function disconnectPort() {
   portSt.className = 'status'; portSt.textContent = '断开中...'; portSt.style.display = 'block';
   try {
     const r = await fetch('/api/disconnect', { method: 'POST' });
-    if (r.ok) { portSt.className = 'status ok'; portSt.textContent = '🔌 串口已断开'; }
-    else { const d = await r.json(); portSt.className = 'status err'; portSt.textContent = '❌ ' + (d.error||'断开失败'); }
+    if (r.ok) {
+      portSt.className = 'status err';
+      portSt.textContent = '🔌 串口已断开';
+      // 刷新串口列表同步状态
+      setTimeout(refreshPorts, 500);
+    } else {
+      const d = await r.json();
+      portSt.className = 'status err';
+      portSt.textContent = '❌ ' + (d.error||'断开失败');
+    }
   } catch(e) { portSt.className = 'status err'; portSt.textContent = '❌ 连接失败'; }
 }
 
@@ -158,8 +168,16 @@ async function openPort() {
   portSt.className = 'status'; portSt.textContent = `打开 ${port}...`; portSt.style.display = 'block';
   try {
     const r = await fetch('/api/ports', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({port}) });
-    if (r.ok) { portSt.className = 'status ok'; portSt.textContent = `✅ 串口 ${port} 已打开`; }
-    else { const d = await r.json(); portSt.className = 'status err'; portSt.textContent = '❌ ' + (d.error||'打开失败'); }
+    if (r.ok) {
+      portSt.className = 'status ok';
+      portSt.textContent = `✅ 串口 ${port} 已打开`;
+      // 刷新串口列表同步状态
+      setTimeout(refreshPorts, 1000);
+    } else {
+      const d = await r.json();
+      portSt.className = 'status err';
+      portSt.textContent = '❌ ' + (d.error||'打开失败');
+    }
   } catch(e) { portSt.className = 'status err'; portSt.textContent = '❌ 连接失败'; }
 }
 

@@ -12,6 +12,7 @@ type StationProvider interface {
 	SetReceiver(mac string) error
 	GetReceiver() string
 	PortName() string
+	Connected() bool
 	Close() error
 	Reopen(portName string) error
 	RefreshPorts() ([]string, string, error)
@@ -55,8 +56,9 @@ func (h *Handler) Ports(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ports":  ports,
-			"active": current,
+			"ports":     ports,
+			"active":    current,
+			"connected": h.Station.Connected(),
 		})
 		return
 	}

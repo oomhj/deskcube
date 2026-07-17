@@ -53,6 +53,7 @@ type Station struct {
 	portName   string
 	timeout    time.Duration
 	ReceiverMAC string
+	connected  bool
 }
 
 // Open connects to the base station via serial port.
@@ -79,7 +80,7 @@ func Open(portName string) (*Station, error) {
 	port.Write([]byte("\n"))
 	time.Sleep(500 * time.Millisecond)
 	port.ResetInputBuffer()
-	return &Station{port: port, portName: portName, timeout: defaultTimeout}, nil
+	return &Station{port: port, portName: portName, timeout: defaultTimeout, connected: true}, nil
 }
 
 // SetReceiver resets the base station and sets the receiver MAC.
@@ -125,7 +126,14 @@ func (s *Station) SetReceiver(mac string) error {
 func (s *Station) GetReceiver() string { return s.ReceiverMAC }
 
 // Close closes the serial connection.
-func (s *Station) Close() error { return s.port.Close() }
+func (s *Station) Close() error {
+	err := s.port.Close()
+	s.connected = false
+	return err
+}
+
+// Connected returns whether the serial port is open.
+func (s *Station) Connected() bool { return s.connected }
 
 // PortName returns the current port name.
 func (s *Station) PortName() string { return s.portName }
