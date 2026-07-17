@@ -49,11 +49,10 @@ func Packet(cmd byte, payload []byte) []byte {
 
 // Station manages serial connection to the base station.
 type Station struct {
-	port       serial.Port
-	portName   string
-	timeout    time.Duration
-	ReceiverMAC string
-	connected  bool
+	port      serial.Port
+	portName  string
+	timeout   time.Duration
+	connected bool
 }
 
 // Open connects to the base station via serial port.
@@ -83,8 +82,8 @@ func Open(portName string) (*Station, error) {
 	return &Station{port: port, portName: portName, timeout: defaultTimeout, connected: true}, nil
 }
 
-// SetReceiver resets the base station and sets the receiver MAC.
-func (s *Station) SetReceiver(mac string) error {
+// setReceiver 复位基站并设置接收机 MAC。
+func (s *Station) setReceiver(mac string) error {
 	// NodeMCU: RTS→RST, DTR→GPIO0
 	s.port.SetRTS(true)   // 复位
 	s.port.SetDTR(false)  // GPIO0 high → 正常启动
@@ -119,11 +118,8 @@ func (s *Station) SetReceiver(mac string) error {
 	if !strings.Contains(string(buf[:n]), "Using MAC") {
 		return errors.New("MAC not accepted")
 	}
-	s.ReceiverMAC = mac
 	return nil
 }
-
-func (s *Station) GetReceiver() string { return s.ReceiverMAC }
 
 // Close closes the serial connection.
 func (s *Station) Close() error {
@@ -177,10 +173,14 @@ func (s *Station) readAck(count int) error {
 	return nil
 }
 
-// SendJpeg sends a JPEG file to the base station.
+// SendJpeg 设置接收机 MAC 并发送 JPEG 文件。
 // Returns once all 30 ACKs are received (image sent via ESP-NOW).
-func (s *Station) SendJpeg(data []byte) error {
-	// 清空串口缓冲区（排除基站启动/上条指令的残留文本）
+func (s *Station) SendJpeg(mac string, data []byte) error {
+	// 先设置接收机 MAC
+	if err := s.setReceiver(mac); err != nil {
+		return fmt.Errorf("set receiver: %w", err)
+	}
+	// 清空缓冲区残留
 	s.port.ResetInputBuffer()
 	time.Sleep(50 * time.Millisecond)
 
@@ -213,11 +213,15 @@ func (s *Station) SendJpeg(data []byte) error {
 	return nil
 }
 
-// SendBrightness sends a brightness command (1-10).
+// SendBrightness 设置接收机 MAC 并发送亮度调节指令（1-10）。
 // Note: firmware does not send ACK for command packets.
-func (s *Station) SendBrightness(value int) error {
+func (s *Station) SendBrightness(mac string, value int) error {
 	if value < 1 || value > 10 {
 		return errors.New("brightness must be 1-10")
+	}
+	// 先设置接收机 MAC
+	if err := s.setReceiver(mac); err != nil {
+		return fmt.Errorf("set receiver: %w", err)
 	}
 	payload := []byte{CmdSetBrightness, 0x01, byte(value)}
 	if err := s.write(CmdCmd, payload); err != nil {

@@ -191,17 +191,17 @@ const macSt = document.getElementById('macStatus');
 async function loadMAC() {
   const r = await fetch('/api/macs');
   const d = await r.json();
-  macSel.value = d.active || '';
+  // 仅展示已知 MAC 列表，服务器不保持状态
+  macSt.className = 'status ok';
+  macSt.textContent = `📡 已加载 ${d.known.length} 个接收机`;
+  macSt.style.display = 'block';
 }
-async function setMAC(mac) {
-  macSt.className = 'status'; macSt.textContent = '设置中...'; macSt.style.display = 'block';
-  try {
-    const r = await fetch('/api/macs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({mac}) });
-    if (r.ok) { macSt.className = 'status ok'; macSt.textContent = '✅ 接收机已切换'; }
-    else { const d = await r.json(); macSt.className = 'status err'; macSt.textContent = '❌ ' + (d.error||''); }
-  } catch(e) { macSt.className = 'status err'; macSt.textContent = '❌ 连接失败'; }
-}
-macSel.addEventListener('change', () => setMAC(macSel.value));
+
+macSel.addEventListener('change', () => {
+  macSt.className = 'status ok';
+  macSt.textContent = `📡 已选择 ${macSel.value}`;
+  macSt.style.display = 'block';
+});
 loadMAC();
 
 const fileInput = document.getElementById('fileInput');
@@ -223,7 +223,7 @@ fileInput.addEventListener('change', async e => {
 
   try {
     const mac = document.getElementById('receiverSelect').value;
-    const url = mac ? `/api/upload?mac=${encodeURIComponent(mac)}` : '/api/upload';
+    const url = `/api/upload?mac=${encodeURIComponent(mac)}`;
     const resp = await fetch(url, { method: 'POST', body: file });
     const data = await resp.json();
     if (resp.ok) { st.className = 'status ok'; st.textContent = '✅ 传图成功'; }
@@ -234,6 +234,7 @@ fileInput.addEventListener('change', async e => {
 });
 
 async function setBrightness(val) {
+  const mac = document.getElementById('receiverSelect').value;
   const st = document.getElementById('brightnessStatus');
   st.className = 'status'; st.textContent = `设置亮度 ${val}...`; st.style.display = 'block';
 
@@ -244,7 +245,7 @@ async function setBrightness(val) {
     const resp = await fetch('/api/brightness', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({value: val})
+      body: JSON.stringify({mac: mac, value: val})
     });
     const data = await resp.json();
     if (resp.ok) { st.className = 'status ok'; st.textContent = `✅ 亮度 ${val}`; }

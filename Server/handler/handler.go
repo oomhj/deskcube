@@ -7,10 +7,8 @@ import (
 )
 
 type StationProvider interface {
-	SendJpeg(data []byte) error
-	SendBrightness(value int) error
-	SetReceiver(mac string) error
-	GetReceiver() string
+	SendJpeg(mac string, data []byte) error
+	SendBrightness(mac string, value int) error
 	PortName() string
 	Connected() bool
 	Close() error
@@ -23,25 +21,11 @@ type Handler struct {
 	Station StationProvider
 }
 
-// MACs returns known receiver MACs and the active one.
+// MACs returns known receiver MACs.
 // GET /api/macs
 func (h *Handler) MACs(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
-		var req struct {
-			MAC string `json:"mac"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
-			return
-		}
-		if err := h.Station.SetReceiver(req.MAC); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"active": h.Station.GetReceiver(),
-		"known":  []string{"8C:4F:00:53:A3:18", "EC:64:C9:C9:37:0C"},
+		"known": []string{"8C:4F:00:53:A3:18", "EC:64:C9:C9:37:0C"},
 	})
 }
 
@@ -103,18 +87,15 @@ func New(station StationProvider) *Handler {
 
 // Upload handles JPEG file upload and forwarding to base station.
 // POST /upload?mac=8C:4F:00:53:A3:18
-// If mac is not specified, sends to the last configured receiver.
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	// 可选：在 URL 查询参数中指定接收机 MAC
-	if mac := r.URL.Query().Get("mac"); mac != "" {
-		if err := h.Station.SetReceiver(mac); err != nil {
-			http.Error(w, "set receiver: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+	mac := r.URL.Query().Get("mac")
+	if mac == "" {
+		http.Error(w, "mac query parameter is required", http.StatusBadRequest)
+		return
 	}
 	data, err := io.ReadAll(r.Body)
 	if err != nil || len(data) == 0 {
@@ -130,7 +111,7 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a valid JPEG file", http.StatusBadRequest)
 		return
 	}
-	if err := h.Station.SendJpeg(data); err != nil {
+	if err := h.Station.SendJpeg(mac, data); err != nil {
 		http.Error(w, "send: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -138,20 +119,25 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 }
 
 // Brightness handles brightness command.
-// POST /brightness  body: {"value": 5}
+// POST /brightness  body: {"mac":"8C:4F:00:53:A3:18", "value": 5}
 func (h *Handler) Brightness(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
-		Value int `json:"value"`
+		MAC   string `json:"mac"`
+		Value int    `json:"value"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if err := h.Station.SendBrightness(req.Value); err != nil {
+	if req.MAC == "" {
+		http.Error(w, "mac is required", http.StatusBadRequest)
+		return
+	}
+	if err := h.Station.SendBrightness(req.MAC, req.Value); err != nil {
 		http.Error(w, "send: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
