@@ -229,12 +229,14 @@ fileInput.addEventListener('change', async e => {
   uploadedUUID = null;
 
   try {
-    const resp = await fetch('/api/upload', { method: 'POST', body: file });
+    const formData = new FormData();
+    formData.append('file', file);
+    const resp = await fetch('/api/upload', { method: 'POST', body: formData });
     const data = await resp.json();
-    if (resp.ok) {
+    if (resp.ok && data.status === 'ok') {
       uploadedUUID = data.uuid;
       st.className = 'status ok';
-      st.textContent = `✅ 已上传 (${data.size} bytes, UUID: ${data.uuid.slice(0,8)}...)`;
+      st.textContent = `✅ 已上传 (${data.size} bytes)`;
       sendBtn.disabled = false;
     } else {
       st.className = 'status err';
@@ -261,7 +263,7 @@ async function sendImage() {
       body: JSON.stringify({mac: mac, cmd: 'display', uuid: uploadedUUID})
     });
     const data = await resp.json();
-    if (resp.ok) {
+    if (resp.ok && data.status === 'ok') {
       st.className = 'status ok';
       st.textContent = '✅ 发送成功';
     } else {
@@ -290,7 +292,7 @@ async function setBrightness(val) {
       body: JSON.stringify({mac: mac, cmd: 'brightness', value: val})
     });
     const data = await resp.json();
-    if (resp.ok) { st.className = 'status ok'; st.textContent = `✅ 亮度 ${val}`; }
+    if (resp.ok && data.status === 'ok') { st.className = 'status ok'; st.textContent = `✅ 亮度 ${val}`; }
     else { st.className = 'status err'; st.textContent = '❌ ' + (data.error || resp.statusText); }
   } catch (e) {
     st.className = 'status err'; st.textContent = '❌ 连接失败';

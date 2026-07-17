@@ -101,25 +101,41 @@ func genUUID() string {
 	return hex.EncodeToString(b)
 }
 
-// Upload 接收 JPEG 文件上传，返回图片 UUID（不发送到基站）。
-// POST /api/upload  Content-Type: image/jpeg  body: <jpeg数据>
+// Upload 接收 JPEG 文件上传（multipart/form-data），返回图片 UUID。
+// POST /api/upload  Content-Type: multipart/form-data  field: file
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	data, err := io.ReadAll(r.Body)
+
+	// 解析表单，最大 1MB
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		jsonError(w, "parse form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		jsonError(w, "file field is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
 	if err != nil || len(data) == 0 {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		jsonError(w, "read file: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
 	if len(data) < 64 || len(data) > 32768 {
-		http.Error(w, "file size must be 64-32768 bytes", http.StatusBadRequest)
+		jsonError(w, "file size must be 64-32768 bytes", http.StatusBadRequest)
 		return
 	}
 	// Check JPEG magic
 	if len(data) < 3 || data[0] != 0xFF || data[1] != 0xD8 || data[2] != 0xFF {
-		http.Error(w, "not a valid JPEG file", http.StatusBadRequest)
+		jsonError(w, "not a valid JPEG file", http.StatusBadRequest)
 		return
 	}
 
@@ -130,9 +146,15 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	imageStore.Unlock()
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"uuid": uuid,
-		"size": len(data),
+		"status": "ok",
+		"uuid":   uuid,
+		"size":   len(data),
 	})
+}
+
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": msg})
 }
 
 // Cmd 向指定接收机下发指令。
