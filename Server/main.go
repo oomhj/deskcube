@@ -50,7 +50,7 @@ func main() {
 
 	// API routes
 	http.HandleFunc("/api/upload", h.Upload)
-	http.HandleFunc("/api/brightness", h.Brightness)
+	http.HandleFunc("/api/cmd", h.Cmd)
 	http.HandleFunc("/api/macs", h.MACs)
 	http.HandleFunc("/api/ports", h.Ports)
 	http.HandleFunc("/api/disconnect", h.Disconnect)

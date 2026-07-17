@@ -73,6 +73,9 @@ h2 { font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; g
     <input type="file" accept="image/jpeg" id="fileInput">
   </label>
   <img class="preview" id="preview">
+  <div style="display:flex;gap:8px;margin-top:12px;">
+    <button class="btn" id="sendBtn" disabled onclick="sendImage()">📤 发送到屏幕</button>
+  </div>
   <div class="status" id="uploadStatus"></div>
 </div>
 
@@ -207,6 +210,8 @@ loadMAC();
 const fileInput = document.getElementById('fileInput');
 const preview = document.getElementById('preview');
 const dropZone = document.getElementById('dropZone');
+const sendBtn = document.getElementById('sendBtn');
+let uploadedUUID = null;
 
 fileInput.addEventListener('change', async e => {
   const file = e.target.files[0];
@@ -217,21 +222,58 @@ fileInput.addEventListener('change', async e => {
   reader.onload = ev => { preview.src = ev.target.result; preview.style.display = 'block'; };
   reader.readAsDataURL(file);
 
-  // Upload
+  // 步骤1: 上传图片到服务器
   const st = document.getElementById('uploadStatus');
   st.className = 'status'; st.textContent = '上传中...'; st.style.display = 'block';
+  sendBtn.disabled = true;
+  uploadedUUID = null;
 
   try {
-    const mac = document.getElementById('receiverSelect').value;
-    const url = `/api/upload?mac=${encodeURIComponent(mac)}`;
-    const resp = await fetch(url, { method: 'POST', body: file });
+    const resp = await fetch('/api/upload', { method: 'POST', body: file });
     const data = await resp.json();
-    if (resp.ok) { st.className = 'status ok'; st.textContent = '✅ 传图成功'; }
-    else { st.className = 'status err'; st.textContent = '❌ ' + (data.error || resp.statusText); }
+    if (resp.ok) {
+      uploadedUUID = data.uuid;
+      st.className = 'status ok';
+      st.textContent = `✅ 已上传 (${data.size} bytes, UUID: ${data.uuid.slice(0,8)}...)`;
+      sendBtn.disabled = false;
+    } else {
+      st.className = 'status err';
+      st.textContent = '❌ ' + (data.error || resp.statusText);
+    }
   } catch (e) {
-    st.className = 'status err'; st.textContent = '❌ 连接失败';
+    st.className = 'status err';
+    st.textContent = '❌ 上传失败';
   }
 });
+
+// 步骤2: 发送到屏幕
+async function sendImage() {
+  if (!uploadedUUID) return;
+  const mac = document.getElementById('receiverSelect').value;
+  const st = document.getElementById('uploadStatus');
+  st.className = 'status'; st.textContent = `📤 发送到 ${mac}...`; st.style.display = 'block';
+  sendBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mac: mac, cmd: 'display', uuid: uploadedUUID})
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      st.className = 'status ok';
+      st.textContent = '✅ 发送成功';
+    } else {
+      st.className = 'status err';
+      st.textContent = '❌ ' + (data.error || resp.statusText);
+    }
+  } catch (e) {
+    st.className = 'status err';
+    st.textContent = '❌ 发送失败';
+  }
+  sendBtn.disabled = false;
+}
 
 async function setBrightness(val) {
   const mac = document.getElementById('receiverSelect').value;
@@ -242,10 +284,10 @@ async function setBrightness(val) {
   event.target.classList.add('active');
 
   try {
-    const resp = await fetch('/api/brightness', {
+    const resp = await fetch('/api/cmd', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mac: mac, value: val})
+      body: JSON.stringify({mac: mac, cmd: 'brightness', value: val})
     });
     const data = await resp.json();
     if (resp.ok) { st.className = 'status ok'; st.textContent = `✅ 亮度 ${val}`; }

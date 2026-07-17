@@ -1,10 +1,19 @@
 package handler
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 )
+
+// imageStore 内存存储已上传的图片，key=uuid
+var imageStore = struct {
+	sync.RWMutex
+	m map[string][]byte
+}{m: make(map[string][]byte)}
 
 type StationProvider interface {
 	SendJpeg(mac string, data []byte) error
@@ -85,16 +94,18 @@ func New(station StationProvider) *Handler {
 	return &Handler{Station: station}
 }
 
-// Upload handles JPEG file upload and forwarding to base station.
-// POST /upload?mac=8C:4F:00:53:A3:18
+// genUUID 生成随机 16 字节十六进制字符串
+func genUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// Upload 接收 JPEG 文件上传，返回图片 UUID（不发送到基站）。
+// POST /api/upload  Content-Type: image/jpeg  body: <jpeg数据>
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	mac := r.URL.Query().Get("mac")
-	if mac == "" {
-		http.Error(w, "mac query parameter is required", http.StatusBadRequest)
 		return
 	}
 	data, err := io.ReadAll(r.Body)
@@ -111,23 +122,32 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a valid JPEG file", http.StatusBadRequest)
 		return
 	}
-	if err := h.Station.SendJpeg(mac, data); err != nil {
-		http.Error(w, "send: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	uuid := genUUID()
+
+	imageStore.Lock()
+	imageStore.m[uuid] = data
+	imageStore.Unlock()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"uuid": uuid,
+		"size": len(data),
+	})
 }
 
-// Brightness handles brightness command.
-// POST /brightness  body: {"mac":"8C:4F:00:53:A3:18", "value": 5}
-func (h *Handler) Brightness(w http.ResponseWriter, r *http.Request) {
+// Cmd 向指定接收机下发指令。
+// POST /api/cmd  body: {"mac":"...", "cmd":"brightness", "value":5}
+// POST /api/cmd  body: {"mac":"...", "cmd":"display", "uuid":"..."}
+func (h *Handler) Cmd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
 		MAC   string `json:"mac"`
-		Value int    `json:"value"`
+		Cmd   string `json:"cmd"`
+		Value int    `json:"value,omitempty"`
+		UUID  string `json:"uuid,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -137,9 +157,38 @@ func (h *Handler) Brightness(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mac is required", http.StatusBadRequest)
 		return
 	}
-	if err := h.Station.SendBrightness(req.MAC, req.Value); err != nil {
-		http.Error(w, "send: "+err.Error(), http.StatusInternalServerError)
+	if req.Cmd == "" {
+		http.Error(w, "cmd is required (brightness|display)", http.StatusBadRequest)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	switch req.Cmd {
+	case "brightness":
+		if err := h.Station.SendBrightness(req.MAC, req.Value); err != nil {
+			http.Error(w, "send: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	case "display":
+		if req.UUID == "" {
+			http.Error(w, "uuid is required for display cmd", http.StatusBadRequest)
+			return
+		}
+		imageStore.RLock()
+		data, ok := imageStore.m[req.UUID]
+		imageStore.RUnlock()
+		if !ok {
+			http.Error(w, "image not found", http.StatusNotFound)
+			return
+		}
+		if err := h.Station.SendJpeg(req.MAC, data); err != nil {
+			http.Error(w, "send: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+
+	default:
+		http.Error(w, "unknown cmd: "+req.Cmd, http.StatusBadRequest)
+	}
 }
