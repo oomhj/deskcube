@@ -102,11 +102,19 @@ func New(station StationProvider) *Handler {
 }
 
 // Upload handles JPEG file upload and forwarding to base station.
-// POST /upload
+// POST /upload?mac=8C:4F:00:53:A3:18
+// If mac is not specified, sends to the last configured receiver.
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+	// 可选：在 URL 查询参数中指定接收机 MAC
+	if mac := r.URL.Query().Get("mac"); mac != "" {
+		if err := h.Station.SetReceiver(mac); err != nil {
+			http.Error(w, "set receiver: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	data, err := io.ReadAll(r.Body)
 	if err != nil || len(data) == 0 {

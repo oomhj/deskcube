@@ -222,7 +222,9 @@ fileInput.addEventListener('change', async e => {
   st.className = 'status'; st.textContent = '上传中...'; st.style.display = 'block';
 
   try {
-    const resp = await fetch('/api/upload', { method: 'POST', body: file });
+    const mac = document.getElementById('receiverSelect').value;
+    const url = mac ? `/api/upload?mac=${encodeURIComponent(mac)}` : '/api/upload';
+    const resp = await fetch(url, { method: 'POST', body: file });
     const data = await resp.json();
     if (resp.ok) { st.className = 'status ok'; st.textContent = '✅ 传图成功'; }
     else { st.className = 'status err'; st.textContent = '❌ ' + (data.error || resp.statusText); }
