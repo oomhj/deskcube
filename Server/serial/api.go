@@ -74,7 +74,10 @@ func Open(portName string) (*Station, error) {
 	port.SetDTR(false)  // GPIO0 high → 正常启动
 	time.Sleep(300 * time.Millisecond)
 	port.SetRTS(false)  // 释放复位
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
+	// 发送换行跳过 MAC 配置（使用广播地址），让基站进入主循环
+	port.Write([]byte("\n"))
+	time.Sleep(500 * time.Millisecond)
 	port.ResetInputBuffer()
 	return &Station{port: port, portName: portName, timeout: defaultTimeout}, nil
 }
@@ -130,6 +133,7 @@ func (s *Station) PortName() string { return s.portName }
 // Reopen closes the current connection and opens a new serial port.
 func (s *Station) Reopen(portName string) error {
 	s.port.Close()
+	time.Sleep(500 * time.Millisecond)  // 等端口释放
 	newStation, err := Open(portName)
 	if err != nil {
 		return err
@@ -168,6 +172,10 @@ func (s *Station) readAck(count int) error {
 // SendJpeg sends a JPEG file to the base station.
 // Returns once all 30 ACKs are received (image sent via ESP-NOW).
 func (s *Station) SendJpeg(data []byte) error {
+	// 清空串口缓冲区（排除基站启动/上条指令的残留文本）
+	s.port.ResetInputBuffer()
+	time.Sleep(50 * time.Millisecond)
+
 	// CMD_JPG_START
 	sizeBytes := make([]byte, 2)
 	binary.LittleEndian.PutUint16(sizeBytes, uint16(len(data)))

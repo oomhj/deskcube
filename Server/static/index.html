@@ -50,6 +50,8 @@ h2 { font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; g
       <option value="">加载中...</option>
     </select>
     <button class="btn btn-sm btn-refresh" onclick="refreshPorts()">🔄</button>
+    <button class="btn btn-sm btn-green" onclick="openPort()">🔗 打开</button>
+    <button class="btn btn-sm" style="background:#ff3b30" onclick="disconnectPort()">🔌 断开</button>
   </div>
   <div class="status" id="portStatus"></div>
 </div>
@@ -141,6 +143,26 @@ async function switchPort(port) {
     portSt.textContent = '❌ 连接失败';
   }
 }
+async function disconnectPort() {
+  portSt.className = 'status'; portSt.textContent = '断开中...'; portSt.style.display = 'block';
+  try {
+    const r = await fetch('/api/disconnect', { method: 'POST' });
+    if (r.ok) { portSt.className = 'status ok'; portSt.textContent = '🔌 串口已断开'; }
+    else { const d = await r.json(); portSt.className = 'status err'; portSt.textContent = '❌ ' + (d.error||'断开失败'); }
+  } catch(e) { portSt.className = 'status err'; portSt.textContent = '❌ 连接失败'; }
+}
+
+async function openPort() {
+  const port = portSel.value;
+  if (!port) { portSt.className = 'status err'; portSt.textContent = '⚠️ 请先选择串口'; portSt.style.display = 'block'; return; }
+  portSt.className = 'status'; portSt.textContent = `打开 ${port}...`; portSt.style.display = 'block';
+  try {
+    const r = await fetch('/api/ports', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({port}) });
+    if (r.ok) { portSt.className = 'status ok'; portSt.textContent = `✅ 串口 ${port} 已打开`; }
+    else { const d = await r.json(); portSt.className = 'status err'; portSt.textContent = '❌ ' + (d.error||'打开失败'); }
+  } catch(e) { portSt.className = 'status err'; portSt.textContent = '❌ 连接失败'; }
+}
+
 portSel.addEventListener('change', () => switchPort(portSel.value));
 refreshPorts();
 

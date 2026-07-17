@@ -12,6 +12,7 @@ type StationProvider interface {
 	SetReceiver(mac string) error
 	GetReceiver() string
 	PortName() string
+	Close() error
 	Reopen(portName string) error
 	RefreshPorts() ([]string, string, error)
 }
@@ -78,6 +79,20 @@ func (h *Handler) Ports(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "port": req.Port})
 	}
+}
+
+// Disconnect closes the serial port connection.
+// POST /api/disconnect
+func (h *Handler) Disconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.Station.Close(); err != nil {
+		http.Error(w, "close: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func New(station StationProvider) *Handler {
