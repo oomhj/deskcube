@@ -233,6 +233,10 @@ def main():
     if not ser: print('Failed to configure base station'); sys.exit(1)
     print(f'Base station configured (port={port}, MAC={mac})')
 
+    # 清空串口缓冲区（排除基站启动后的残留文本）
+    time.sleep(0.3)
+    ser.reset_input_buffer()
+
     # === 亮度指令 ===
     if use_brightness:
         val = 10
