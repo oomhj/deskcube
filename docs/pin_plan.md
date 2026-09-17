@@ -3,6 +3,7 @@
 > 状态：**方案设计**（未实施，代码仍为当前 GPIO5 背光配置）
 > ⚠ 背光驱动电路的最终设计（NPN 低边 + 基极下拉，active HIGH）见 `hardware_architecture.md` §7，该设计使 §3 的复位电平风险直接消除，实测步骤仅作为旧板验证手段保留。
 > 供电架构：**24V/6A → T8A 保险 → 24V→19V 预稳压 → INA226 → 4×SW3518（现成模块）**；母线定 19V 是因为模块主开关 AON7534 只有 30V（24V 下仅 1.25×，准则要 ≥1.5×）。辅助 3V3 必须用 buck（19V 直降 LDO 仍会烧 4.6W），见 `hardware_architecture.md` §3–§6。
+> 📌 **v5 纯充电站形态**：显示屏改为 0.96" I2C OLED → **TFT 的 DC/RST/MOSI/SCK + 背光共 5 个 GPIO（0/2/12/13/14）与背光电路退役**，本文 §1/§3/§4/§5 的推导保留作参考；实际只实施 **§2（I2C = GPIO4/5 唯一可行）** + 2 个按键脚（GPIO0/2）。
 > 目标：屏幕 + 串口 + **I2C** 三者共存
 > I2C 从设备：**BME280（0x76）+ INA226（0x40，19V 母线总输入计量）**，见 `hardware_architecture.md` §5；INA226 **不新增 GPIO**
 > 约束来源：ESP8266EX Datasheet 启动 strapping、ESP8266 Arduino Core 3.1.2 实现、TFT_eSPI 2.5.43 源码
